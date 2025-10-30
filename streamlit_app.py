@@ -1,19 +1,20 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
 
 # =========================================================
-# 0. НАСТРОЙКА СТРАНИЦЫ
+# 0. НАСТРОЙКА
 # =========================================================
 st.set_page_config(page_title="CTR по дням", layout="wide")
-st.title("CTR по дням с наложением спортивных событий")
+st.markdown(
+    "<h1 style='text-align:center;margin-bottom:0.4rem;'>CTR по дням с наложением спортивных событий</h1>",
+    unsafe_allow_html=True,
+)
 
 # =========================================================
-# 1. ДАННЫЕ (ВШИТЫ)
+# 1. ДАННЫЕ
 # =========================================================
-# 1.1. CTR ПО ДНЯМ
-# ВНИМАНИЕ: CTR в ДОЛЯХ (0.0034 = 0,34%)
+# CTR в долях!
 CTR_DATA = [
     {"День": "2025-04-23", "Просмотры": 265237, "CTR": 0.0054},
     {"День": "2025-04-24", "Просмотры": 426884, "CTR": 0.0051},
@@ -211,9 +212,7 @@ df_ctr = pd.DataFrame(CTR_DATA)
 df_ctr["День"] = pd.to_datetime(df_ctr["День"])
 df_ctr = df_ctr.sort_values("День").reset_index(drop=True)
 
-# 1.2. СОБЫТИЯ
-# Беру твой перечень событий. Если в "Новая таблица-11.xlsx" ты что-то добавила
-# (например, новые UFC / старт РПЛ / Суперкубок) – просто допиши здесь новую строку.
+# 1.2. СОБЫТИЯ — строго из твоей таблицы
 EVENTS = [
     {"начало": "2025-03-26", "окончание": "2025-05-25", "название": "Плей-офф КХЛ", "вид спорта": "Хоккей"},
     {"начало": "2025-04-15", "окончание": "2025-06-22", "название": "Плей-офф НБА", "вид спорта": "Баскетбол"},
@@ -239,173 +238,175 @@ EVENTS = [
     {"начало": "2025-10-26", "окончание": "2025-10-26", "название": "Эль Классико (октябрь)", "вид спорта": "Футбол"},
 ]
 
-
 df_events = pd.DataFrame(EVENTS)
 df_events["начало"] = pd.to_datetime(df_events["начало"])
 df_events["окончание"] = pd.to_datetime(df_events["окончание"])
 df_events = df_events.sort_values("начало").reset_index(drop=True)
 
 # =========================================================
-# 2. ФИЛЬТР ПО ДАТАМ
+# 2. ФИЛЬТР (мы его поставим НИЖЕ, но логически он здесь)
 # =========================================================
-min_date = df_ctr["День"].min()
-max_date = df_ctr["День"].max()
+start_min = pd.to_datetime("2025-04-23")  # жёстко: показываем только с этого дня
+start_max = df_ctr["День"].max()
 
-with st.sidebar:
-    st.header("Фильтры")
-    date_from, date_to = st.slider(
-        "Диапазон дат",
-        min_value=min_date.to_pydatetime(),
-        max_value=max_date.to_pydatetime(),
-        value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
-        format="DD.MM.YYYY",
-    )
-
-    top_n = st.number_input(
-        "Пиков CTR вывести",
-        min_value=3,
-        max_value=30,
-        value=8,
-        step=1,
-    )
-
-date_from = pd.to_datetime(date_from)
-date_to = pd.to_datetime(date_to)
-
-df_view = df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)].copy()
-df_view = df_view.dropna(subset=["CTR"])
+# пока просто значения; UI ниже
+date_from = start_min
+date_to = start_max
+top_n_default = 15  # покажем первые 15 пиков, можно сменить в UI
 
 # =========================================================
-# 3. ЦВЕТА ПО ВИДАМ СПОРТА
+# 3. ГРАФИК
 # =========================================================
-base_colors = [
-    "rgba(46, 204, 113, 0.17)",  # зелёный
-    "rgba(52, 152, 219, 0.17)",  # синий
-    "rgba(231, 76, 60, 0.17)",   # красный
-    "rgba(155, 89, 182, 0.17)",  # фиолет
-    "rgba(241, 196, 15, 0.20)",  # жёлтый
-    "rgba(230, 126, 34, 0.20)",  # оранж
-]
-sport_colors = {}
-for i, sport in enumerate(df_events["вид спорта"].unique().tolist()):
-    sport_colors[sport] = base_colors[i % len(base_colors)]
+def build_chart(date_from, date_to):
+    view = df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)].copy()
+    view = view.dropna(subset=["CTR"])
 
-# =========================================================
-# 4. ГРАФИК
-# =========================================================
-fig = go.Figure()
+    fig = go.Figure()
 
-# линия CTR (в долях, но рисуем с форматированием в %)
-fig.add_trace(
-    go.Scatter(
-        x=df_view["День"],
-        y=df_view["CTR"],
-        mode="lines+markers",
-        name="CTR",
-        line=dict(width=2.5),
-        marker=dict(size=5),
-        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>",
-    )
-)
-
-# события
-for _, ev in df_events.iterrows():
-    ev_start = ev["начало"]
-    ev_end = ev["окончание"]
-    sport = ev["вид спорта"]
-    color = sport_colors.get(sport, "rgba(0,0,0,0.05)")
-
-    # нет пересечения c выбранным диапазоном — пропускаем
-    if ev_end < date_from or ev_start > date_to:
-        continue
-
-    x0 = max(ev_start, date_from)
-    x1 = min(ev_end, date_to)
-
-    fig.add_vrect(
-        x0=x0,
-        x1=x1,
-        fillcolor=color,
-        layer="below",
-        line_width=0,
-        annotation_text=ev["название"],
-        annotation_position="top left",
-        annotation=dict(
-            font=dict(size=11, color="#ffffff"),
-        ),
+    # линия CTR
+    fig.add_trace(
+        go.Scatter(
+            x=view["День"],
+            y=view["CTR"],
+            mode="lines+markers",
+            name="CTR",
+            line=dict(width=2.4, color="rgba(181, 220, 255, 1)"),
+            marker=dict(size=4),
+            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>",
+        )
     )
 
-    fig.add_vline(
-        x=ev_start,
-        line_width=1,
-        line_dash="dash",
-        line_color="rgba(0,0,0,0.35)",
-    )
-    if ev_end != ev_start:
-        fig.add_vline(
-            x=ev_end,
-            line_width=1,
-            line_dash="dash",
-            line_color="rgba(0,0,0,0.2)",
+    # цвета по видам
+    base_colors = {
+        "Хоккей": "rgba(46, 204, 113, 0.13)",
+        "Баскетбол": "rgba(52, 152, 219, 0.13)",
+        "Футбол": "rgba(231, 76, 60, 0.13)",
+        "Теннис": "rgba(155, 89, 182, 0.13)",
+        "UFC": "rgba(241, 196, 15, 0.13)",
+        "Олимпиада": "rgba(230, 126, 34, 0.13)",
+    }
+
+    # прямоугольники
+    for _, ev in df_events.iterrows():
+        if ev["окончание"] < date_from or ev["начало"] > date_to:
+            continue
+        x0 = max(ev["начало"], date_from)
+        x1 = min(ev["окончание"], date_to)
+
+        fill = base_colors.get(ev["вид спорта"], "rgba(255,255,255,0.06)")
+
+        # сам блок
+        fig.add_vrect(
+            x0=x0,
+            x1=x1,
+            fillcolor=fill,
+            layer="below",
+            line_width=0,
         )
 
-fig.update_layout(
-    height=580,
-    margin=dict(l=20, r=20, t=60, b=40),
-    xaxis_title="Дата",
-    yaxis_title="CTR",
-    hovermode="x unified",
-    legend=dict(
-        orientation="h",
-        yanchor="bottom",
-        y=1.02,
-        xanchor="right",
-        x=1
-    ),
-)
-fig.update_xaxes(showgrid=False, tickfont=dict(size=11))
-fig.update_yaxes(showgrid=True, zeroline=False, tickformat=".2%")
+        # тонкая линия по старту
+        fig.add_vline(
+            x=ev["начало"],
+            line_width=0.8,
+            line_dash="dash",
+            line_color="rgba(255,255,255,0.4)",
+        )
 
+        # подпись (сверху, слегка под углом)
+        fig.add_annotation(
+            x=x0,
+            y=1.04,
+            xref="x",
+            yref="paper",
+            text=ev["название"],
+            showarrow=False,
+            xanchor="left",
+            font=dict(size=10, color="#ffffff"),
+            textangle=12,
+            bgcolor="rgba(0,0,0,0.0)",
+            borderpad=0,
+        )
+
+    fig.update_layout(
+        height=560,
+        margin=dict(l=20, r=20, t=75, b=40),
+        xaxis_title="Дата",
+        yaxis_title="CTR",
+        hovermode="x unified",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    fig.update_xaxes(
+        range=[date_from, date_to],
+        showgrid=False,
+        tickfont=dict(size=11),
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        zeroline=False,
+        tickformat=".2%",
+    )
+    return fig, view
+
+
+# сначала рендерим график (с полным диапазоном)
+fig, current_view = build_chart(date_from, date_to)
 st.plotly_chart(fig, use_container_width=True)
 
 # =========================================================
-# 5. ПИКОВЫЕ CTR
+# 4. КОНТРОЛЛЕРЫ (ВНИЗУ)
 # =========================================================
-# берём топ-N по CTR
-peaks = df_view.sort_values("CTR", ascending=False).head(top_n).copy()
+with st.container():
+    st.markdown("### Фильтры")
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        date_from, date_to = st.slider(
+            "Диапазон дат",
+            min_value=start_min.to_pydatetime(),
+            max_value=start_max.to_pydatetime(),
+            value=(start_min.to_pydatetime(), start_max.to_pydatetime()),
+            format="DD.MM.YYYY",
+        )
+    with c2:
+        top_n = st.number_input(
+            "Пиков CTR вывести",
+            min_value=3,
+            max_value=50,
+            value=top_n_default,
+            step=1,
+        )
 
-def date_in_events(d: pd.Timestamp) -> bool:
-    for _, ev in df_events.iterrows():
-        if ev["начало"] <= d <= ev["окончание"]:
-            return True
-    return False
+# перестраиваем график по нижнему фильтру
+fig, current_view = build_chart(pd.to_datetime(date_from), pd.to_datetime(date_to))
+st.plotly_chart(fig, use_container_width=True)
 
-def events_for_date(d: pd.Timestamp) -> str:
+# =========================================================
+# 5. ТАБЛИЦА ПИКОВ CTR
+# =========================================================
+# берём топ-N по текущему диапазону
+peaks = current_view.sort_values("CTR", ascending=False).head(top_n).copy()
+
+# функция: если день = старт/конец события, пишем его
+def exact_event_for_date(d: pd.Timestamp) -> str:
     names = []
     for _, ev in df_events.iterrows():
-        if ev["начало"] <= d <= ev["окончание"]:
+        if ev["начало"].date() == d.date() or ev["окончание"].date() == d.date():
             names.append(ev["название"])
     return ", ".join(names)
 
-peaks["В_событие"] = peaks["День"].apply(date_in_events)
-peaks["Событие"] = peaks["День"].apply(events_for_date)
 peaks["Дата"] = peaks["День"].dt.strftime("%d.%m.%Y")
 peaks["CTR (в %)"] = peaks["CTR"].map(lambda x: f"{x:.2%}")
+peaks["Событие (точное)"] = peaks["День"].apply(exact_event_for_date)
 
-# порядок колонок
-peaks_display = peaks[["Дата", "CTR (в %)", "Событие", "В_событие"]].copy()
+peaks_display = peaks[["Дата", "CTR (в %)", "Событие (точное)"]].copy()
 
-st.subheader("Пиковые значения CTR")
-
-def highlight_row(row):
-    if row["В_событие"]:
-        return ['background-color: rgba(231, 76, 60, 0.12)'] * len(row)
-    return [''] * len(row)
-
+st.markdown("### Пиковые значения CTR")
 st.dataframe(
-    peaks_display.style.apply(highlight_row, axis=1),
+    peaks_display,
     use_container_width=True,
     hide_index=True,
 )
+
+
 
 
