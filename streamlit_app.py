@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 # -----------------------------------------------------
 # НАСТРОЙКА
 # -----------------------------------------------------
-st.set_page_config(page_title="CTR дашборд", layout="wide")
+st.set_page_config(page_title="Борд", layout="wide")
 
 st.markdown(
     "<h1 style='text-align:center;margin-bottom:0.4rem;'>CTR по дням</h1>",
@@ -17,7 +17,7 @@ st.markdown(
 # -----------------------------------------------------
 pwd = st.text_input("Введите пароль для доступа", type="password")
 if pwd != "SportsTeam":
-    st.warning("Доступ к борду только по паролю.")
+    st.warning("")
     st.stop()
 
 # -----------------------------------------------------
@@ -257,9 +257,9 @@ df_events["окончание"] = pd.to_datetime(df_events["окончание"]
 page = st.selectbox(
     "Выбери страницу",
     [
-        "1. CTR + спортивные события",
-        "2. CTR по этапам кампании",
-        "3. CTR vs Просмотры (Новая таблица 10)",
+        "1. Спортивные события",
+        "2. Смена креативов",
+        "3. Просмотры",
         "4. Итоги",
     ],
 )
@@ -267,7 +267,7 @@ page = st.selectbox(
 # =====================================================
 # СТРАНИЦА 1
 # =====================================================
-if page == "1. CTR + спортивные события":
+if page == "1. CTR + Спортивные события":
     min_date = pd.to_datetime("2025-04-23")
     max_date = df_ctr["День"].max()
 
@@ -397,7 +397,7 @@ if page == "1. CTR + спортивные события":
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown(
-        f"**Зависимых сдвигов (точное событие + ≥12% изменение CTR):** {dependent_count}"
+        f"**Точки зависимости:** {dependent_count}"
     )
 
     peaks = df_view.sort_values("CTR", ascending=False).head(top_n).copy()
@@ -416,8 +416,8 @@ if page == "1. CTR + спортивные события":
 # =====================================================
 # СТРАНИЦА 2
 # =====================================================
-elif page == "2. CTR по этапам кампании":
-    st.markdown("### CTR по этапам кампании (без событий)")
+elif page == "2. CTR + Смена креативов":
+    st.markdown("### Смена креативов")
 
     b1 = pd.to_datetime("2025-04-23")
     b2 = pd.to_datetime("2025-07-07")
@@ -532,18 +532,18 @@ elif page == "2. CTR по этапам кампании":
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        render_small_table(win_b1, "Старт периода (23.04)", b1, "#8DB5FF55")
+        render_small_table(win_b1, "1 ФЛАЙТ", b1, "#8DB5FF55")
     with c2:
-        render_small_table(win_b2, "Переход 07.07 → зелёный", b2, "#66CC9955")
+        render_small_table(win_b2, "2 ФЛАЙТ", b2, "#66CC9955")
     with c3:
-        render_small_table(win_b3, "Переход 14.08 → оранжевый", b3, "#FF9F4355")
+        render_small_table(win_b3, "3 ФЛАЙТ", b3, "#FF9F4355")
     with c4:
-        render_small_table(win_b4, "Переход 22.10 → жёлтый", b4, "#FFDD5755")
+        render_small_table(win_b4, "4 ФЛАЙТ", b4, "#FFDD5755")
 
 # =====================================================
 # СТРАНИЦА 3
 # =====================================================
-elif page == "3. CTR vs Просмотры (Новая таблица 10)":
+elif page == "3.CTR + Просмотры":
     st.markdown("### CTR vs Просмотры (по дням)")
 
     min_date = pd.to_datetime("2025-04-23")
@@ -662,7 +662,7 @@ elif page == "3. CTR vs Просмотры (Новая таблица 10)":
     st.plotly_chart(fig3, use_container_width=True)
 
     st.markdown(
-        f"**Совместных сильных движений (CTR и Просмотры вместе):** {len(joint_days)}"
+        f"**Точки зависимости:** {len(joint_days)}"
     )
 
     avg_views = df3["Просмотры"].mean()
