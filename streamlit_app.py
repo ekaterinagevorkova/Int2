@@ -26,7 +26,7 @@ if not st.session_state.auth_ok:
     pwd = st.text_input("Пароль", type="password", label_visibility="collapsed")
     if pwd == "SportsTeam":
         st.session_state.auth_ok = True
-        st.experimental_rerun()
+        st.rerun()   
     st.stop()
 
 # -----------------------------------------------------
