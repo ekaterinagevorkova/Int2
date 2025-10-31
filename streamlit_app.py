@@ -844,6 +844,8 @@ else:
         use_container_width=True,
         hide_index=True,
     )
+    
+    st.markdown(f"**Количество строк:** {len(df_table2)}")
 
     # --- 2) все дни по убыванию CTR ---
     st.markdown("#### 2) Все дни по убыванию CTR")
