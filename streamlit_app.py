@@ -703,4 +703,132 @@ else:
         use_container_width=True,
         hide_index=True,
     )
+elif page == "4. Итоги":
+    st.markdown("### Итоговая сводка по дням")
+
+    # границы этапов
+    stage_1_start = pd.to_datetime("2025-04-23")
+    stage_2_start = pd.to_datetime("2025-07-07")
+    stage_3_start = pd.to_datetime("2025-08-14")
+    stage_4_start = pd.to_datetime("2025-10-22")
+    last_date = pd.to_datetime("2025-10-29")
+
+    # даты смены этапа (для флага "смена этапа")
+    stage_switches = [
+        pd.to_datetime("2025-07-07"),
+        pd.to_datetime("2025-08-14"),
+        pd.to_datetime("2025-10-22"),
+    ]
+
+    # база
+    df_all = df_ctr.dropna(subset=["CTR"]).copy()
+    df_all = df_all.sort_values("День").reset_index(drop=True)
+
+    # среднее по просмотрам
+    views_mean = df_all["Просмотры"].mean()
+
+    # точные события (начало/окончание)
+    def exact_events_for_day(d: pd.Timestamp) -> str:
+        names = []
+        for _, ev in df_events.iterrows():
+            if ev["начало"].date() == d.date() or ev["окончание"].date() == d.date():
+                names.append(ev["название"])
+        return ", ".join(names)
+
+    # этап по дате
+    def stage_for_day(d: pd.Timestamp) -> int:
+        if d < stage_2_start:
+            return 1
+        elif d < stage_3_start:
+            return 2
+        elif d < stage_4_start:
+            return 3
+        else:
+            return 4
+
+    # смена этапа — да, если не больше чем за неделю ДО даты смены
+    def is_stage_switch_near(d: pd.Timestamp) -> str:
+        for sw in stage_switches:
+            if sw - pd.Timedelta(days=7) < d <= sw:
+                return "да"
+        return "нет"
+
+    df_all["Точные события"] = df_all["День"].apply(exact_events_for_day)
+    df_all["Просмотры выше среднего"] = df_all["Просмотры"].apply(
+        lambda v: "да" if v >= views_mean else "нет"
+    )
+    df_all["Этап"] = df_all["День"].apply(stage_for_day)
+    df_all["Смена этапа"] = df_all["День"].apply(is_stage_switch_near)
+    df_all["Дата"] = df_all["День"].dt.strftime("%d.%m.%Y")
+    df_all["CTR (в %)"] = df_all["CTR"].map(lambda x: f"{x:.2%}")
+
+    # ---------- счётчики (по первой таблице) ----------
+    events_count = (df_all["Точные события"] != "").sum()
+    views_high_count = (df_all["Просмотры выше среднего"] == "да").sum()
+    stage_switch_count = (df_all["Смена этапа"] == "да").sum()
+
+    st.markdown(
+        f"**События:** {events_count} &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"**Просмотры выше среднего:** {views_high_count} &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"**Смена этапа:** {stage_switch_count}"
+    )
+
+    # ---------- ТАБЛИЦА 1 ----------
+    st.markdown("#### 1) Все дни по убыванию CTR")
+    df_table1 = df_all.sort_values("CTR", ascending=False)[
+        ["Дата", "CTR (в %)", "Точные события", "Просмотры выше среднего", "Этап", "Смена этапа"]
+    ]
+    st.dataframe(df_table1, use_container_width=True, hide_index=True)
+
+    # ---------- ТАБЛИЦА 2: скачки CTR ----------
+    st.markdown("#### 2) Скачки CTR в пределах 2 недель")
+
+    # порог "ощутимо"
+    JUMP_THR = 0.20  # 20% — можно поменять на 0.15
+
+    jump_rows = []
+
+    # идём по всем дням и смотрим ±14 дней
+    for i, row in df_all.iterrows():
+        d = row["День"]
+        ctr = row["CTR"]
+        # окно +/- 14 дней
+        win = df_all[
+            (df_all["День"] >= d - pd.Timedelta(days=14))
+            & (df_all["День"] <= d + pd.Timedelta(days=14))
+        ]
+        # считаем макс относительное отличие
+        diffs = []
+        for _, w in win.iterrows():
+            if w["День"] == d:
+                continue
+            base = ctr
+            other = w["CTR"]
+            if base and base > 0:
+                diff = abs(other - base) / base
+                diffs.append(diff)
+        max_diff = max(diffs) if diffs else 0.0
+        if max_diff >= JUMP_THR:
+            jump_rows.append(row)
+
+    if jump_rows:
+        df_jumps = pd.DataFrame(jump_rows).copy()
+        df_jumps["Точные события"] = df_jumps["День"].apply(exact_events_for_day)
+        df_jumps["Просмотры выше среднего"] = df_jumps["Просмотры"].apply(
+            lambda v: "да" if v >= views_mean else "нет"
+        )
+        df_jumps["Этап"] = df_jumps["День"].apply(stage_for_day)
+        df_jumps["Смена этапа"] = df_jumps["День"].apply(is_stage_switch_near)
+        df_jumps["Дата"] = df_jumps["День"].dt.strftime("%d.%m.%Y")
+        df_jumps["CTR (в %)"] = df_jumps["CTR"].map(lambda x: f"{x:.2%}")
+
+        st.dataframe(
+            df_jumps.sort_values("CTR", ascending=False)[
+                ["Дата", "CTR (в %)", "Точные события", "Просмотры выше среднего", "Этап", "Смена этапа"]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("Скачков CTR, превышающих 20% в окне ±14 дней, не найдено.")
 
