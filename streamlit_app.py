@@ -1,5 +1,12 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
 
-
+st.set_page_config(page_title="CTR по дням", layout="wide")
+st.markdown(
+    "<h1 style='text-align:center;margin-bottom:0.4rem;'>CTR по дням с наложением спортивных событий</h1>",
+    unsafe_allow_html=True,
+)
 # -----------------------------
 # 1. ДАННЫЕ
 
