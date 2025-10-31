@@ -838,5 +838,3 @@ else:
         ]
     ]
     st.dataframe(df_table1, use_container_width=True, hide_index=True)
-
-
