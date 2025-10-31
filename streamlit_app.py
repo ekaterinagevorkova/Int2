@@ -749,12 +749,11 @@ else:
             return 4
 
     def is_stage_switch_near(d: pd.Timestamp) -> str:
-    for sw in stage_switches:
-        # Считаем, что скачок относим к смене креативов,
-        # если он случился в течение 7 дней ПОСЛЕ даты смены
-        if sw < d <= sw + pd.Timedelta(days=7):
-            return "да"
-    return "нет"
+        # "да" — если день попадает в 7-дневное окно до смены креативов
+        for sw in stage_switches:
+            if sw - pd.Timedelta(days=7) < d <= sw:
+                return "да"
+        return "нет"
 
     def local_views_mean(date: pd.Timestamp, df: pd.DataFrame, days=14):
         win = df[
