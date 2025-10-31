@@ -715,7 +715,7 @@ elif page == "3. Просмотры":
 else:
     st.markdown("### Итоги")
 
-    # границы этапов (на всякий случай, если выше по коду где-то нужны)
+    # границы этапов
     stage_1_start = pd.to_datetime("2025-04-23")
     stage_2_start = pd.to_datetime("2025-07-07")
     stage_3_start = pd.to_datetime("2025-08-14")
@@ -732,11 +732,8 @@ else:
     df_all = df_ctr.dropna(subset=["CTR"]).copy()
     df_all = df_all.sort_values("День").reset_index(drop=True)
 
-    # глобальное среднее просмотров (одна цифра по всей кампании)
+    # глобальные средние
     global_views_mean = df_all["Просмотры"].mean()
-
-    # глобальное среднее CTR (может пригодиться)
-    global_ctr_mean = df_all["CTR"].mean()
 
     # --- вспомогательные функции ---
     def exact_events_for_day(d: pd.Timestamp) -> str:
@@ -758,8 +755,7 @@ else:
 
     def is_stage_switch_near(d: pd.Timestamp) -> str:
         for sw in stage_switches:
-            # считаем, что привязано к смене креативов,
-            # если день попал в 7 дней ПОСЛЕ смены
+            # только в 7 дней ПОСЛЕ смены
             if sw < d <= sw + pd.Timedelta(days=7):
                 return "да"
         return "нет"
@@ -777,49 +773,44 @@ else:
     )
 
     # --- локальные средние (±7 дней) для просмотров и CTR ---
-    local_views_means = []
-    local_views_flags = []
-
-    local_ctr_means = []
-    local_ctr_flags = []
-
     min_day = df_all["День"].min()
     max_day = df_all["День"].max()
+
+    local_views_means = []
+    local_ctr_means = []
+    ctr_local_flags = []
 
     for _, row in df_all.iterrows():
         cur_day = row["День"]
 
-        # границы окна ±7 дней, но внутри всего диапазона
         date_min = max(min_day, cur_day - pd.Timedelta(days=7))
         date_max = min(max_day, cur_day + pd.Timedelta(days=7))
 
         window = df_all[(df_all["День"] >= date_min) & (df_all["День"] <= date_max)]
 
-        # локальное среднее просмотров
+        # локальные просмотры
         lv_mean = window["Просмотры"].mean()
         local_views_means.append(lv_mean)
-        local_views_flags.append("да" if row["Просмотры"] >= lv_mean else "нет")
 
-        # локальное среднее CTR
+        # локальный ctr
         lc_mean = window["CTR"].mean()
         local_ctr_means.append(lc_mean)
-        local_ctr_flags.append("да" if row["CTR"] >= lc_mean else "нет")
+
+        ctr_local_flags.append("да" if row["CTR"] >= lc_mean else "нет")
 
     df_all["Локальное среднее просмотров"] = local_views_means
-    df_all["Просмотры выше локального"] = local_views_flags
-
     df_all["Локальный CTR"] = local_ctr_means
-    df_all["CTR выше локального"] = local_ctr_flags
+    df_all["CTR выше локального"] = ctr_local_flags
 
-    # --- ТАБЛИЦА 1: только дни с просмотрами выше локального (±7 дней) ---
-    df_table2 = df_all[df_all["Просмотры выше локального"] == "да"].copy()
-    df_table2 = df_table2.sort_values("CTR", ascending=False)
+    # --- ТАБЛИЦА 1: дни по CTR выше локального (±7 дней) ---
+    df_table_ctr = df_all[df_all["CTR выше локального"] == "да"].copy()
+    df_table_ctr = df_table_ctr.sort_values("CTR", ascending=False)
 
-    # метрики для карточек считаем именно по этой таблице
-    events_count = (df_table2["Точные события"] != "").sum()
-    views_high_global = (df_table2["Просмотры выше среднего"] == "да").sum()
-    views_high_local = len(df_table2)
-    stage_switch_count = (df_table2["Смена креативов"] == "да").sum()
+    # метрики для карточек считаем по этой таблице
+    events_count = (df_table_ctr["Точные события"] != "").sum()
+    views_high_global = (df_table_ctr["Просмотры выше среднего"] == "да").sum()
+    rows_ctr_local = len(df_table_ctr)
+    stage_switch_count = (df_table_ctr["Смена креативов"] == "да").sum()
 
     # --- карточки ---
     st.markdown(
@@ -834,8 +825,8 @@ else:
                 <div style="font-size:1.6rem;font-weight:600;">{views_high_global}</div>
             </div>
             <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
-                <div style="font-size:0.7rem;color:#9ca3af;">Просмотры выше локального (±7 дн)</div>
-                <div style="font-size:1.6rem;font-weight:600;">{views_high_local}</div>
+                <div style="font-size:0.7rem;color:#9ca3af;">CTR выше локального (±7 дн)</div>
+                <div style="font-size:1.6rem;font-weight:600;">{rows_ctr_local}</div>
             </div>
             <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
                 <div style="font-size:0.7rem;color:#9ca3af;">Смена креативов (+7 дн)</div>
@@ -846,53 +837,52 @@ else:
         unsafe_allow_html=True,
     )
 
-    # --- 1) таблица с отбором (выше локального) ---
-    st.markdown("#### 1) Дни с просмотрами выше локального среднего (±7 дней)")
+    # --- 1) таблица по CTR ---
+    st.markdown("#### 1) Дни по CTR выше локального среднего (±7 дней)")
 
-    cols_t2 = [
+    cols_ctr = [
         "Дата",
         "CTR (в %)",
+        "Локальный CTR",
         "CTR выше локального",
         "Точные события",
         "Просмотры",
-        "Локальное среднее просмотров",
-        "Просмотры выше локального",
         "Просмотры выше среднего",
         "Этап",
         "Смена креативов",
     ]
-    # защита от случайных переименований
-    cols_t2 = [c for c in cols_t2 if c in df_table2.columns]
+    cols_ctr = [c for c in cols_ctr if c in df_table_ctr.columns]
 
     st.dataframe(
-        df_table2[cols_t2],
+        df_table_ctr[cols_ctr],
         use_container_width=True,
         hide_index=True,
     )
-    st.markdown(f"**Количество строк:** {len(df_table2)}")
+    st.markdown(f"**Количество строк:** {len(df_table_ctr)}")
 
     # --- 2) все дни по убыванию CTR ---
     st.markdown("#### 2) Все дни по убыванию CTR")
 
-    df_table1 = df_all.sort_values("CTR", ascending=False)
-    cols_t1 = [
+    df_table_all = df_all.sort_values("CTR", ascending=False)
+    cols_all = [
         "Дата",
         "CTR (в %)",
+        "Локальный CTR",
         "CTR выше локального",
         "Точные события",
         "Просмотры",
         "Локальное среднее просмотров",
-        "Просмотры выше локального",
         "Просмотры выше среднего",
         "Этап",
         "Смена креативов",
     ]
-    cols_t1 = [c for c in cols_t1 if c in df_table1.columns]
+    cols_all = [c for c in cols_all if c in df_table_all.columns]
 
     st.dataframe(
-        df_table1[cols_t1],
+        df_table_all[cols_all],
         use_container_width=True,
         hide_index=True,
     )
+
 
 
