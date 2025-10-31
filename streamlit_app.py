@@ -8,7 +8,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="Борд", layout="wide")
 
 st.markdown(
-    "<h1 style='text-align:center;margin-bottom:0.4rem;'>CTR по дням</h1>",
+    "<h1 style='text-align:center;margin-bottom:0.4rem;'>Борд // CTR </h1>",
     unsafe_allow_html=True,
 )
 
@@ -17,7 +17,6 @@ st.markdown(
 # -----------------------------------------------------
 pwd = st.text_input("Введите пароль для доступа", type="password")
 if pwd != "SportsTeam":
-    st.warning("")
     st.stop()
 
 # -----------------------------------------------------
