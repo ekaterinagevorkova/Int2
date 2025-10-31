@@ -5,18 +5,28 @@ import plotly.graph_objects as go
 # -----------------------------------------------------
 # НАСТРОЙКА
 # -----------------------------------------------------
-st.set_page_config(page_title="Борд", layout="wide")
-
-st.markdown(
-    "<h1 style='text-align:center;margin-bottom:0.4rem;'>Борд // CTR </h1>",
-    unsafe_allow_html=True,
-)
+st.set_page_config(page_title="CTR дашборд", layout="wide")
 
 # -----------------------------------------------------
-# ПАРОЛЬ
+# ЭКРАН АВТОРИЗАЦИИ
 # -----------------------------------------------------
-pwd = st.text_input("Введите пароль для доступа", type="password")
-if pwd != "SportsTeam":
+if "auth_ok" not in st.session_state:
+    st.session_state.auth_ok = False
+
+if not st.session_state.auth_ok:
+    st.markdown(
+        """
+        <div style="text-align:center;margin-top:4rem;">
+            <h2>Доступ к дашборду Sports</h2>
+            <p style="color:#9ca3af;">Введите пароль, чтобы продолжить</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    pwd = st.text_input("Пароль", type="password", label_visibility="collapsed")
+    if pwd == "SportsTeam":
+        st.session_state.auth_ok = True
+        st.experimental_rerun()
     st.stop()
 
 # -----------------------------------------------------
@@ -251,22 +261,41 @@ df_events["начало"] = pd.to_datetime(df_events["начало"])
 df_events["окончание"] = pd.to_datetime(df_events["окончание"])
 
 # -----------------------------------------------------
-# СТРАНИЦЫ
+# ВИЗУАЛЬНЫЙ СЕЛЕКТОР СТРАНИЦ
 # -----------------------------------------------------
-page = st.selectbox(
-    "Выбери страницу",
-    [
-        "1. Спортивные события",
-        "2. Смена креативов",
-        "3. Просмотры",
-        "4. Итоги",
-    ],
-)
+with st.container():
+    st.markdown(
+        """
+        <style>
+        .page-pill {
+            display:inline-block;
+            margin-right:0.5rem;
+            margin-bottom:0.4rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<div style='margin-bottom:0.4rem;font-weight:500;'>Выбор раздела</div>",
+        unsafe_allow_html=True,
+    )
+    page = st.radio(
+        "",
+        (
+            "1. Спортивные события",
+            "2. Смена креативов",
+            "3. Просмотры",
+            "4. Итоги",
+        ),
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
 # =====================================================
-# СТРАНИЦА 1
+# 1. СПОРТИВНЫЕ СОБЫТИЯ
 # =====================================================
-if page == "1. CTR + Спортивные события":
+if page == "1. Спортивные события":
     min_date = pd.to_datetime("2025-04-23")
     max_date = df_ctr["День"].max()
 
@@ -274,7 +303,6 @@ if page == "1. CTR + Спортивные события":
         "<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>",
         unsafe_allow_html=True,
     )
-
     col_l, col_c, col_r = st.columns([1, 2.5, 1])
     with col_c:
         date_from, date_to = st.slider(
@@ -316,7 +344,7 @@ if page == "1. CTR + Спортивные события":
     df_view["CTR_change"] = (df_view["CTR"] - df_view["CTR_prev"]) / df_view["CTR_prev"]
     df_view["Событие (точное)"] = df_view["День"].apply(exact_events_for_day)
 
-    CTR_EVENT_THR = 0.12  # 12%
+    CTR_EVENT_THR = 0.12
 
     def is_dependent(row):
         if not row["Событие (точное)"]:
@@ -396,7 +424,7 @@ if page == "1. CTR + Спортивные события":
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown(
-        f"**Точки зависимости:** {dependent_count}"
+        f"**Зависимых сдвигов (точное событие + ≥12% изменение CTR):** {dependent_count}"
     )
 
     peaks = df_view.sort_values("CTR", ascending=False).head(top_n).copy()
@@ -413,10 +441,10 @@ if page == "1. CTR + Спортивные события":
     )
 
 # =====================================================
-# СТРАНИЦА 2
+# 2. СМЕНА КРЕАТИВОВ
 # =====================================================
-elif page == "2. CTR + Смена креативов":
-    st.markdown("### Смена креативов")
+elif page == "2. Смена креативов":
+    st.markdown("### CTR по этапам кампании (смены креативов)")
 
     b1 = pd.to_datetime("2025-04-23")
     b2 = pd.to_datetime("2025-07-07")
@@ -491,7 +519,6 @@ elif page == "2. CTR + Смена креативов":
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     fig2.update_yaxes(tickformat=".2%")
-
     st.plotly_chart(fig2, use_container_width=True)
 
     def make_window(df, center_date, days=3):
@@ -531,18 +558,18 @@ elif page == "2. CTR + Смена креативов":
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        render_small_table(win_b1, "1 ФЛАЙТ", b1, "#8DB5FF55")
+        render_small_table(win_b1, "Старт периода (23.04)", b1, "#8DB5FF55")
     with c2:
-        render_small_table(win_b2, "2 ФЛАЙТ", b2, "#66CC9955")
+        render_small_table(win_b2, "Переход 07.07 → зелёный", b2, "#66CC9955")
     with c3:
-        render_small_table(win_b3, "3 ФЛАЙТ", b3, "#FF9F4355")
+        render_small_table(win_b3, "Переход 14.08 → оранжевый", b3, "#FF9F4355")
     with c4:
-        render_small_table(win_b4, "4 ФЛАЙТ", b4, "#FFDD5755")
+        render_small_table(win_b4, "Переход 22.10 → жёлтый", b4, "#FFDD5755")
 
 # =====================================================
-# СТРАНИЦА 3
+# 3. ПРОСМОТРЫ
 # =====================================================
-elif page == "3.CTR + Просмотры":
+elif page == "3. Просмотры":
     st.markdown("### CTR vs Просмотры (по дням)")
 
     min_date = pd.to_datetime("2025-04-23")
@@ -661,7 +688,7 @@ elif page == "3.CTR + Просмотры":
     st.plotly_chart(fig3, use_container_width=True)
 
     st.markdown(
-        f"**Точки зависимости:** {len(joint_days)}"
+        f"**Совместных сильных движений (CTR и Просмотры вместе):** {len(joint_days)}"
     )
 
     avg_views = df3["Просмотры"].mean()
@@ -680,7 +707,7 @@ elif page == "3.CTR + Просмотры":
     )
 
 # =====================================================
-# СТРАНИЦА 4 — ИТОГИ
+# 4. ИТОГИ
 # =====================================================
 else:
     st.markdown("### Итоги")
@@ -722,7 +749,6 @@ else:
                 return "да"
         return "нет"
 
-    # считаем локальное среднее по просмотрам для окна ±14 дней
     def local_views_mean(date: pd.Timestamp, df: pd.DataFrame, days=14):
         win = df[
             (df["День"] >= date - pd.Timedelta(days=days))
@@ -732,7 +758,6 @@ else:
             return df["Просмотры"].mean()
         return win["Просмотры"].mean()
 
-    # сначала обогащаем df_all
     df_all["Точные события"] = df_all["День"].apply(exact_events_for_day)
     df_all["Этап"] = df_all["День"].apply(stage_for_day)
     df_all["Смена этапа"] = df_all["День"].apply(is_stage_switch_near)
@@ -742,7 +767,6 @@ else:
         lambda v: "да" if v >= global_views_mean else "нет"
     )
 
-    # считаем локальное среднее и флаг
     local_means = []
     local_flags = []
     for _, row in df_all.iterrows():
@@ -752,11 +776,9 @@ else:
     df_all["Локальное среднее просмотров"] = local_means
     df_all["Просмотры выше локального"] = local_flags
 
-    # ---------- ТАБЛИЦА 2 (фильтрованная) ----------
     df_table2 = df_all[df_all["Просмотры выше локального"] == "да"].copy()
     df_table2 = df_table2.sort_values("CTR", ascending=False)
 
-    # считаем суммы ТОЛЬКО по этой таблице
     events_count = (df_table2["Точные события"] != "").sum()
     views_high_global = (df_table2["Просмотры выше среднего (глобально)"] == "да").sum()
     views_high_local = (df_table2["Просмотры выше локального"] == "да").sum()
@@ -764,7 +786,7 @@ else:
 
     st.markdown(
         f"""
-        <div style="display:flex;gap:1rem;margin-bottom:1rem;">
+        <div style="display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap;">
             <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
                 <div style="font-size:0.7rem;color:#9ca3af;">События</div>
                 <div style="font-size:1.6rem;font-weight:600;">{events_count}</div>
@@ -778,7 +800,7 @@ else:
                 <div style="font-size:1.6rem;font-weight:600;">{views_high_local}</div>
             </div>
             <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
-                <div style="font-size:0.7rem,color:#9ca3af;">Смена креативов</div>
+                <div style="font-size:0.7rem;color:#9ca3af;">Смена креативов</div>
                 <div style="font-size:1.6rem;font-weight:600;">{stage_switch_count}</div>
             </div>
         </div>
@@ -803,7 +825,6 @@ else:
         hide_index=True,
     )
 
-    # ---------- ТАБЛИЦА 1 (все дни) ----------
     st.markdown("#### 2) Все дни по убыванию CTR")
     df_table1 = df_all.sort_values("CTR", ascending=False)[
         [
@@ -817,4 +838,5 @@ else:
         ]
     ]
     st.dataframe(df_table1, use_container_width=True, hide_index=True)
+
 
