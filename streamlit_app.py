@@ -718,7 +718,7 @@ else:
     stage_3_start = pd.to_datetime("2025-08-14")
     stage_4_start = pd.to_datetime("2025-10-22")
 
-    # эти даты будем считать «окном смены креативов»
+    # даты смен креативов
     stage_switches = [
         pd.to_datetime("2025-07-07"),
         pd.to_datetime("2025-08-14"),
@@ -749,12 +749,12 @@ else:
             return 4
 
     def is_stage_switch_near(d: pd.Timestamp) -> str:
-    for sw in stage_switches:
-        # Считаем, что скачок относим к смене креативов,
-        # если он случился в течение 7 дней ПОСЛЕ даты смены
-        if sw < d <= sw + pd.Timedelta(days=7):
-            return "да"
-    return "нет"
+        for sw in stage_switches:
+            # Считаем, что скачок относим к смене креативов,
+            # если он случился в течение 7 дней ПОСЛЕ даты смены
+            if sw < d <= sw + pd.Timedelta(days=7):
+                return "да"
+        return "нет"
 
     def local_views_mean(date: pd.Timestamp, df: pd.DataFrame, days=14):
         win = df[
@@ -825,7 +825,6 @@ else:
     # --- 1) таблица с отбором (ВЫШЕ) ---
     st.markdown("#### 1) Дни с просмотрами выше локального среднего (±14 дней)")
 
-    # чтобы не падало, если мы переименовали поле — берём доступные столбцы
     cols_t2 = [
         "Дата",
         "CTR (в %)",
@@ -847,7 +846,6 @@ else:
     st.markdown("#### 2) Все дни по убыванию CTR")
 
     df_table1 = df_all.sort_values("CTR", ascending=False)
-
     cols_t1 = [
         "Дата",
         "CTR (в %)",
