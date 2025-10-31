@@ -3,16 +3,25 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # -----------------------------------------------------
-# НАСТРОЙКА СТРАНИЦЫ
+# НАСТРОЙКА
 # -----------------------------------------------------
 st.set_page_config(page_title="CTR дашборд", layout="wide")
+
 st.markdown(
     "<h1 style='text-align:center;margin-bottom:0.4rem;'>CTR по дням</h1>",
     unsafe_allow_html=True,
 )
 
 # -----------------------------------------------------
-# ДАННЫЕ (из "Новая таблица 10")
+# ПАРОЛЬ
+# -----------------------------------------------------
+pwd = st.text_input("Введите пароль для доступа", type="password")
+if pwd != "SportsTeam":
+    st.warning("Доступ к борду только по паролю.")
+    st.stop()
+
+# -----------------------------------------------------
+# ДАННЫЕ (из «Новая таблица 10»)
 # -----------------------------------------------------
 CTR_DATA = [
     {"День": "2025-04-23", "Просмотры": 265237, "CTR": 0.0054},
@@ -212,7 +221,7 @@ df_ctr["День"] = pd.to_datetime(df_ctr["День"])
 df_ctr = df_ctr.sort_values("День").reset_index(drop=True)
 
 # -----------------------------------------------------
-# СПОРТИВНЫЕ СОБЫТИЯ (для 1 и 4 страниц)
+# СПОРТСОБЫТИЯ
 # -----------------------------------------------------
 EVENTS = [
     {"начало": "2025-03-26", "окончание": "2025-05-25", "название": "Плей-офф КХЛ", "вид спорта": "Хоккей"},
@@ -243,7 +252,7 @@ df_events["начало"] = pd.to_datetime(df_events["начало"])
 df_events["окончание"] = pd.to_datetime(df_events["окончание"])
 
 # -----------------------------------------------------
-# ВЕРХНИЙ СЕЛЕКТ СТРАНИЦ
+# СТРАНИЦЫ
 # -----------------------------------------------------
 page = st.selectbox(
     "Выбери страницу",
@@ -290,26 +299,35 @@ if page == "1. CTR + спортивные события":
     df_view = df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)].copy()
     df_view = df_view.dropna(subset=["CTR"]).sort_values("День")
 
-    # считаем совместные движения (как на 3-й странице)
+    def exact_events_for_day(d: pd.Timestamp) -> str:
+        names = []
+        for _, ev in df_events.iterrows():
+            if ev["начало"].date() == d.date() or ev["окончание"].date() == d.date():
+                names.append(ev["название"])
+        return ", ".join(names)
+
+    def interval_events_for_day(d: pd.Timestamp) -> str:
+        names = []
+        for _, ev in df_events.iterrows():
+            if ev["начало"] <= d <= ev["окончание"]:
+                names.append(ev["название"])
+        return ", ".join(names)
+
     df_view["CTR_prev"] = df_view["CTR"].shift(1)
-    df_view["Views_prev"] = df_view["Просмотры"].shift(1)
     df_view["CTR_change"] = (df_view["CTR"] - df_view["CTR_prev"]) / df_view["CTR_prev"]
-    df_view["Views_change"] = (df_view["Просмотры"] - df_view["Views_prev"]) / df_view["Views_prev"]
+    df_view["Событие (точное)"] = df_view["День"].apply(exact_events_for_day)
 
-    CTR_THR = 0.12
-    VIEWS_THR = 0.12
+    CTR_EVENT_THR = 0.12  # 12%
 
-    def is_joint(row):
-        if pd.isna(row["CTR_change"]) or pd.isna(row["Views_change"]):
+    def is_dependent(row):
+        if not row["Событие (точное)"]:
             return False
-        if row["CTR_change"] > CTR_THR and row["Views_change"] > VIEWS_THR:
-            return True
-        if row["CTR_change"] < -CTR_THR and row["Views_change"] < -VIEWS_THR:
-            return True
-        return False
+        if pd.isna(row["CTR_change"]):
+            return False
+        return abs(row["CTR_change"]) >= CTR_EVENT_THR
 
-    df_view["joint_move"] = df_view.apply(is_joint, axis=1)
-    joint_count = int(df_view["joint_move"].sum())
+    df_view["dependent_move"] = df_view.apply(is_dependent, axis=1)
+    dependent_count = int(df_view["dependent_move"].sum())
 
     sport_colors = {
         "Хоккей": "rgba(46, 204, 113, 0.12)",
@@ -361,7 +379,7 @@ if page == "1. CTR + спортивные события":
             showarrow=False,
             xanchor="left",
             font=dict(size=10, color="#ffffff"),
-            textangle=65,  # твоя правка: 65 градусов
+            textangle=65,
         )
 
     fig.update_layout(
@@ -378,22 +396,9 @@ if page == "1. CTR + спортивные события":
 
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown(f"**Совместных сильных движений (CTR + просмотры):** {joint_count}")
-
-    # таблица пиков
-    def exact_events_for_day(d: pd.Timestamp) -> str:
-        names = []
-        for _, ev in df_events.iterrows():
-            if ev["начало"].date() == d.date() or ev["окончание"].date() == d.date():
-                names.append(ev["название"])
-        return ", ".join(names)
-
-    def interval_events_for_day(d: pd.Timestamp) -> str:
-        names = []
-        for _, ev in df_events.iterrows():
-            if ev["начало"] <= d <= ev["окончание"]:
-                names.append(ev["название"])
-        return ", ".join(names)
+    st.markdown(
+        f"**Зависимых сдвигов (точное событие + ≥12% изменение CTR):** {dependent_count}"
+    )
 
     peaks = df_view.sort_values("CTR", ascending=False).head(top_n).copy()
     peaks["Дата"] = peaks["День"].dt.strftime("%d.%m.%Y")
@@ -414,7 +419,6 @@ if page == "1. CTR + спортивные события":
 elif page == "2. CTR по этапам кампании":
     st.markdown("### CTR по этапам кампании (без событий)")
 
-    # границы этапов
     b1 = pd.to_datetime("2025-04-23")
     b2 = pd.to_datetime("2025-07-07")
     b3 = pd.to_datetime("2025-08-14")
@@ -423,7 +427,6 @@ elif page == "2. CTR по этапам кампании":
 
     df2 = df_ctr.dropna(subset=["CTR"]).copy()
 
-    # график
     fig2 = go.Figure()
 
     seg1 = df2[(df2["День"] >= b1) & (df2["День"] < b2)]
@@ -489,6 +492,7 @@ elif page == "2. CTR по этапам кампании":
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     fig2.update_yaxes(tickformat=".2%")
+
     st.plotly_chart(fig2, use_container_width=True)
 
     def make_window(df, center_date, days=3):
@@ -573,7 +577,6 @@ elif page == "3. CTR vs Просмотры (Новая таблица 10)":
     df3 = df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)].copy()
     df3 = df3.dropna(subset=["CTR"]).sort_values("День")
 
-    # изменения
     df3["CTR_prev"] = df3["CTR"].shift(1)
     df3["Views_prev"] = df3["Просмотры"].shift(1)
     df3["CTR_change"] = (df3["CTR"] - df3["CTR_prev"]) / df3["CTR_prev"]
@@ -596,7 +599,6 @@ elif page == "3. CTR vs Просмотры (Новая таблица 10)":
 
     fig3 = go.Figure()
 
-    # твоя правка: цвета голубой + оранжевый
     fig3.add_trace(
         go.Scatter(
             x=df3["День"],
@@ -609,6 +611,7 @@ elif page == "3. CTR vs Просмотры (Новая таблица 10)":
             yaxis="y1",
         )
     )
+
     fig3.add_trace(
         go.Scatter(
             x=df3["День"],
@@ -681,15 +684,12 @@ elif page == "3. CTR vs Просмотры (Новая таблица 10)":
 # СТРАНИЦА 4 — ИТОГИ
 # =====================================================
 else:
-    st.markdown("### Итоговая сводка по дням")
+    st.markdown("### Итоги")
 
-    # границы этапов
     stage_1_start = pd.to_datetime("2025-04-23")
     stage_2_start = pd.to_datetime("2025-07-07")
     stage_3_start = pd.to_datetime("2025-08-14")
     stage_4_start = pd.to_datetime("2025-10-22")
-    last_date = pd.to_datetime("2025-10-29")
-
     stage_switches = [
         pd.to_datetime("2025-07-07"),
         pd.to_datetime("2025-08-14"),
@@ -698,7 +698,7 @@ else:
 
     df_all = df_ctr.dropna(subset=["CTR"]).copy()
     df_all = df_all.sort_values("День").reset_index(drop=True)
-    views_mean = df_all["Просмотры"].mean()
+    global_views_mean = df_all["Просмотры"].mean()
 
     def exact_events_for_day(d: pd.Timestamp) -> str:
         names = []
@@ -723,72 +723,99 @@ else:
                 return "да"
         return "нет"
 
+    # считаем локальное среднее по просмотрам для окна ±14 дней
+    def local_views_mean(date: pd.Timestamp, df: pd.DataFrame, days=14):
+        win = df[
+            (df["День"] >= date - pd.Timedelta(days=days))
+            & (df["День"] <= date + pd.Timedelta(days=days))
+        ]
+        if len(win) == 0:
+            return df["Просмотры"].mean()
+        return win["Просмотры"].mean()
+
+    # сначала обогащаем df_all
     df_all["Точные события"] = df_all["День"].apply(exact_events_for_day)
-    df_all["Просмотры выше среднего"] = df_all["Просмотры"].apply(
-        lambda v: "да" if v >= views_mean else "нет"
-    )
     df_all["Этап"] = df_all["День"].apply(stage_for_day)
     df_all["Смена этапа"] = df_all["День"].apply(is_stage_switch_near)
     df_all["Дата"] = df_all["День"].dt.strftime("%d.%m.%Y")
     df_all["CTR (в %)"] = df_all["CTR"].map(lambda x: f"{x:.2%}")
-
-    events_count = (df_all["Точные события"] != "").sum()
-    views_high_count = (df_all["Просмотры выше среднего"] == "да").sum()
-    stage_switch_count = (df_all["Смена этапа"] == "да").sum()
-
-    st.markdown(
-        f"**События:** {events_count} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"**Просмотры выше среднего:** {views_high_count} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"**Смена этапа (≤ 7 дней):** {stage_switch_count}"
+    df_all["Просмотры выше среднего (глобально)"] = df_all["Просмотры"].apply(
+        lambda v: "да" if v >= global_views_mean else "нет"
     )
 
-    st.markdown("#### 1) Все дни по убыванию CTR")
+    # считаем локальное среднее и флаг
+    local_means = []
+    local_flags = []
+    for _, row in df_all.iterrows():
+        lm = local_views_mean(row["День"], df_all, 14)
+        local_means.append(lm)
+        local_flags.append("да" if row["Просмотры"] >= lm else "нет")
+    df_all["Локальное среднее просмотров"] = local_means
+    df_all["Просмотры выше локального"] = local_flags
+
+    # ---------- ТАБЛИЦА 2 (фильтрованная) ----------
+    df_table2 = df_all[df_all["Просмотры выше локального"] == "да"].copy()
+    df_table2 = df_table2.sort_values("CTR", ascending=False)
+
+    # считаем суммы ТОЛЬКО по этой таблице
+    events_count = (df_table2["Точные события"] != "").sum()
+    views_high_global = (df_table2["Просмотры выше среднего (глобально)"] == "да").sum()
+    views_high_local = (df_table2["Просмотры выше локального"] == "да").sum()
+    stage_switch_count = (df_table2["Смена этапа"] == "да").sum()
+
+    st.markdown(
+        f"""
+        <div style="display:flex;gap:1rem;margin-bottom:1rem;">
+            <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
+                <div style="font-size:0.7rem;color:#9ca3af;">События</div>
+                <div style="font-size:1.6rem;font-weight:600;">{events_count}</div>
+            </div>
+            <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
+                <div style="font-size:0.7rem;color:#9ca3af;">Просмотры выше среднего</div>
+                <div style="font-size:1.6rem;font-weight:600;">{views_high_global}</div>
+            </div>
+            <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
+                <div style="font-size:0.7rem;color:#9ca3af;">Просмотры выше среднего (±14 дн)</div>
+                <div style="font-size:1.6rem;font-weight:600;">{views_high_local}</div>
+            </div>
+            <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
+                <div style="font-size:0.7rem,color:#9ca3af;">Смена креативов</div>
+                <div style="font-size:1.6rem;font-weight:600;">{stage_switch_count}</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("#### 1) Дни с просмотрами выше локального среднего (±14 дней)")
+    st.dataframe(
+        df_table2[
+            [
+                "Дата",
+                "CTR (в %)",
+                "Точные события",
+                "Просмотры",
+                "Просмотры выше среднего (глобально)",
+                "Этап",
+                "Смена этапа",
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # ---------- ТАБЛИЦА 1 (все дни) ----------
+    st.markdown("#### 2) Все дни по убыванию CTR")
     df_table1 = df_all.sort_values("CTR", ascending=False)[
-        ["Дата", "CTR (в %)", "Точные события", "Просмотры выше среднего", "Этап", "Смена этапа"]
+        [
+            "Дата",
+            "CTR (в %)",
+            "Точные события",
+            "Просмотры",
+            "Просмотры выше среднего (глобально)",
+            "Этап",
+            "Смена этапа",
+        ]
     ]
     st.dataframe(df_table1, use_container_width=True, hide_index=True)
-
-    # таблица скачков
-    st.markdown("#### 2) Скачки CTR в пределах 2 недель")
-
-    JUMP_THR = 0.20  # 20%
-
-    jump_rows = []
-    for _, row in df_all.iterrows():
-        d = row["День"]
-        ctr = row["CTR"]
-        win = df_all[
-            (df_all["День"] >= d - pd.Timedelta(days=14))
-            & (df_all["День"] <= d + pd.Timedelta(days=14))
-        ]
-        diffs = []
-        for _, w in win.iterrows():
-            if w["День"] == d:
-                continue
-            if ctr and ctr > 0:
-                diff = abs(w["CTR"] - ctr) / ctr
-                diffs.append(diff)
-        max_diff = max(diffs) if diffs else 0.0
-        if max_diff >= JUMP_THR:
-            jump_rows.append(row)
-
-    if jump_rows:
-        df_jumps = pd.DataFrame(jump_rows).copy()
-        df_jumps["Точные события"] = df_jumps["День"].apply(exact_events_for_day)
-        df_jumps["Просмотры выше среднего"] = df_jumps["Просмотры"].apply(
-            lambda v: "да" if v >= views_mean else "нет"
-        )
-        df_jumps["Этап"] = df_jumps["День"].apply(stage_for_day)
-        df_jumps["Смена этапа"] = df_jumps["День"].apply(is_stage_switch_near)
-        df_jumps["Дата"] = df_jumps["День"].dt.strftime("%d.%m.%Y")
-        df_jumps["CTR (в %)"] = df_jumps["CTR"].map(lambda x: f"{x:.2%}")
-        st.dataframe(
-            df_jumps.sort_values("CTR", ascending=False)[
-                ["Дата", "CTR (в %)", "Точные события", "Просмотры выше среднего", "Этап", "Смена этапа"]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("Скачков CTR, превышающих 20% в окне ±14 дней, не найдено.")
 
