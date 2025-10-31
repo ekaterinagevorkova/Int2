@@ -732,7 +732,7 @@ else:
     df_all = df_ctr.dropna(subset=["CTR"]).copy()
     df_all = df_all.sort_values("День").reset_index(drop=True)
 
-    # глобальные средние
+    # глобальное среднее просмотров
     global_views_mean = df_all["Просмотры"].mean()
 
     # --- вспомогательные функции ---
@@ -760,7 +760,7 @@ else:
                 return "да"
         return "нет"
 
-    # --- расчёты полей ---
+    # --- базовые поля ---
     df_all["Точные события"] = df_all["День"].apply(exact_events_for_day)
     df_all["Этап"] = df_all["День"].apply(stage_for_day)
     df_all["Смена креативов"] = df_all["День"].apply(is_stage_switch_near)
@@ -779,10 +779,10 @@ else:
     local_views_means = []
     local_ctr_means = []
     ctr_local_flags = []
+    views_local_flags = []
 
     for _, row in df_all.iterrows():
         cur_day = row["День"]
-
         date_min = max(min_day, cur_day - pd.Timedelta(days=7))
         date_max = min(max_day, cur_day + pd.Timedelta(days=7))
 
@@ -791,16 +791,18 @@ else:
         # локальные просмотры
         lv_mean = window["Просмотры"].mean()
         local_views_means.append(lv_mean)
+        views_local_flags.append("да" if row["Просмотры"] >= lv_mean else "нет")
 
         # локальный ctr
         lc_mean = window["CTR"].mean()
         local_ctr_means.append(lc_mean)
-
         ctr_local_flags.append("да" if row["CTR"] >= lc_mean else "нет")
 
     df_all["Локальное среднее просмотров"] = local_views_means
+    df_all["Просмотры выше локального"] = views_local_flags
     df_all["Локальный CTR"] = local_ctr_means
     df_all["CTR выше локального"] = ctr_local_flags
+    df_all["Локальный CTR (в %)"] = df_all["Локальный CTR"].map(lambda x: f"{x:.2%}")
 
     # --- ТАБЛИЦА 1: дни по CTR выше локального (±7 дней) ---
     df_table_ctr = df_all[df_all["CTR выше локального"] == "да"].copy()
@@ -809,7 +811,7 @@ else:
     # метрики для карточек считаем по этой таблице
     events_count = (df_table_ctr["Точные события"] != "").sum()
     views_high_global = (df_table_ctr["Просмотры выше среднего"] == "да").sum()
-    rows_ctr_local = len(df_table_ctr)
+    views_high_local = (df_table_ctr["Просмотры выше локального"] == "да").sum()
     stage_switch_count = (df_table_ctr["Смена креативов"] == "да").sum()
 
     # --- карточки ---
@@ -825,8 +827,8 @@ else:
                 <div style="font-size:1.6rem;font-weight:600;">{views_high_global}</div>
             </div>
             <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
-                <div style="font-size:0.7rem;color:#9ca3af;">CTR выше локального (±7 дн)</div>
-                <div style="font-size:1.6rem;font-weight:600;">{rows_ctr_local}</div>
+                <div style="font-size:0.7rem;color:#9ca3af;">Просмотры выше локального (±7 дн)</div>
+                <div style="font-size:1.6rem;font-weight:600;">{views_high_local}</div>
             </div>
             <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:180px;">
                 <div style="font-size:0.7rem;color:#9ca3af;">Смена креативов (+7 дн)</div>
@@ -843,11 +845,10 @@ else:
     cols_ctr = [
         "Дата",
         "CTR (в %)",
-        "Локальный CTR",
-        "CTR выше локального",
+        "Локальный CTR (в %)",
         "Точные события",
-        "Просмотры",
         "Просмотры выше среднего",
+        "Просмотры выше локального",
         "Этап",
         "Смена креативов",
     ]
@@ -867,12 +868,10 @@ else:
     cols_all = [
         "Дата",
         "CTR (в %)",
-        "Локальный CTR",
-        "CTR выше локального",
+        "Локальный CTR (в %)",
         "Точные события",
-        "Просмотры",
-        "Локальное среднее просмотров",
         "Просмотры выше среднего",
+        "Просмотры выше локального",
         "Этап",
         "Смена креативов",
     ]
@@ -883,6 +882,4 @@ else:
         use_container_width=True,
         hide_index=True,
     )
-
-
 
