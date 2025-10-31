@@ -539,5 +539,165 @@ else:
             b4,
             "#FFDD5755",  # жёлтый
         )
+# =====================================================
+# СТРАНИЦА 3
+# =====================================================
+else:
+    st.markdown("### CTR vs Просмотры (по дням)")
 
+    # 1. фильтр по датам — как на 1-й
+    min_date = pd.to_datetime("2025-04-23")
+    max_date = df_ctr["День"].max()
+
+    st.markdown(
+        "<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>",
+        unsafe_allow_html=True,
+    )
+
+    col_l, col_c, col_r = st.columns([1, 2.5, 1])
+    with col_c:
+        date_from, date_to = st.slider(
+            "Диапазон дат",
+            min_value=min_date.to_pydatetime(),
+            max_value=max_date.to_pydatetime(),
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+            format="DD.MM.YYYY",
+        )
+        top_n = st.number_input(
+            "Пиков CTR вывести",
+            min_value=3,
+            max_value=50,
+            value=15,
+            step=1,
+        )
+
+    date_from = pd.to_datetime(date_from)
+    date_to = pd.to_datetime(date_to)
+
+    # 2. отфильтровали данные
+    df3 = df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)].copy()
+    df3 = df3.dropna(subset=["CTR"])  # на всякий
+
+    # 3. считаем день-к-дню изменения
+    # сортируем на всякий
+    df3 = df3.sort_values("День").reset_index(drop=True)
+
+    # сдвиги
+    df3["CTR_prev"] = df3["CTR"].shift(1)
+    df3["Просмотры_prev"] = df3["Просмотры"].shift(1)
+
+    # процентные изменения
+    df3["CTR_change"] = (df3["CTR"] - df3["CTR_prev"]) / df3["CTR_prev"]
+    df3["Views_change"] = (df3["Просмотры"] - df3["Просмотры_prev"]) / df3["Просмотры_prev"]
+
+    # 4. ищем «совместные движения»
+    CTR_THR = 0.12  # 12%
+    VIEWS_THR = 0.12
+
+    def is_joint(row):
+        if pd.isna(row["CTR_change"]) or pd.isna(row["Views_change"]):
+            return False
+        # обе вверх
+        if row["CTR_change"] > CTR_THR and row["Views_change"] > VIEWS_THR:
+            return True
+        # обе вниз
+        if row["CTR_change"] < -CTR_THR and row["Views_change"] < -VIEWS_THR:
+            return True
+        return False
+
+    df3["joint_move"] = df3.apply(is_joint, axis=1)
+    joint_days = df3[df3["joint_move"]]
+
+    # 5. график: две линии + vline на совместные дни
+    fig3 = go.Figure()
+
+    # линия CTR (левая ось)
+    fig3.add_trace(
+        go.Scatter(
+            x=df3["День"],
+            y=df3["CTR"],
+            mode="lines+markers",
+            name="CTR",
+            line=dict(color="rgba(128,189,255,1)", width=2.2),
+            marker=dict(size=4),
+            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>",
+            yaxis="y1",
+        )
+    )
+
+    # линия Просмотры (правая ось)
+    fig3.add_trace(
+        go.Scatter(
+            x=df3["День"],
+            y=df3["Просмотры"],
+            mode="lines+markers",
+            name="Просмотры",
+            line=dict(color="rgba(255,213,128,1)", width=2.0),
+            marker=dict(size=3),
+            hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>",
+            yaxis="y2",
+        )
+    )
+
+    # вертикальные линии для совместных движений
+    for _, row in joint_days.iterrows():
+        fig3.add_vline(
+            x=row["День"],
+            line_width=1.1,
+            line_dash="dot",
+            line_color="rgba(255,80,80,0.85)",
+        )
+        # подпись над линией можно сделать маленькой точкой/числом,
+        # но лучше не плодить аннотации, их может быть много
+
+    fig3.update_layout(
+        height=560,
+        margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(
+            title="Дата",
+            range=[date_from, date_to],
+            showgrid=False,
+        ),
+        yaxis=dict(
+            title="CTR",
+            showgrid=True,
+            zeroline=False,
+            tickformat=".2%",
+        ),
+        yaxis2=dict(
+            title="Просмотры",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+        ),
+        hovermode="x unified",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    st.plotly_chart(fig3, use_container_width=True)
+
+    # 6. выводим число совместных движений
+    st.markdown(
+        f"**Совместных сильных движений (CTR и Просмотры вместе):** {len(joint_days)}"
+    )
+
+    # 7. таблица пиков CTR
+    # среднее по просмотрам в диапазоне
+    avg_views = df3["Просмотры"].mean()
+
+    peaks3 = df3.sort_values("CTR", ascending=False).head(top_n).copy()
+    peaks3["Дата"] = peaks3["День"].dt.strftime("%d.%m.%Y")
+    peaks3["CTR (в %)"] = peaks3["CTR"].map(lambda x: f"{x:.2%}")
+    peaks3["Уровень просмотров"] = peaks3["Просмотры"].apply(
+        lambda v: "выше среднего" if v >= avg_views else "ниже среднего"
+    )
+
+    st.markdown("### Пиковые значения CTR в выбранный период")
+    st.dataframe(
+        peaks3[["Дата", "CTR (в %)", "Просмотры", "Уровень просмотров"]],
+        use_container_width=True,
+        hide_index=True,
+    )
 
