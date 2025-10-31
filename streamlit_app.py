@@ -392,11 +392,13 @@ else:
     b4 = pd.to_datetime("2025-10-22")
     b5 = pd.to_datetime("2025-10-29")
 
+    # берём только нормальные дни
     df2 = df_ctr.dropna(subset=["CTR"]).copy()
 
     # ---------------- ГРАФИК ----------------
     fig2 = go.Figure()
 
+    # 1: 23.04 – 07.07 (синий)
     seg1 = df2[(df2["День"] >= b1) & (df2["День"] < b2)]
     fig2.add_trace(
         go.Scatter(
@@ -410,6 +412,7 @@ else:
         )
     )
 
+    # 2: 07.07 – 14.08 (зелёный)
     seg2 = df2[(df2["День"] >= b2) & (df2["День"] < b3)]
     fig2.add_trace(
         go.Scatter(
@@ -423,6 +426,7 @@ else:
         )
     )
 
+    # 3: 14.08 – 22.10 (оранжевый)
     seg3 = df2[(df2["День"] >= b3) & (df2["День"] < b4)]
     fig2.add_trace(
         go.Scatter(
@@ -436,6 +440,7 @@ else:
         )
     )
 
+    # 4: 22.10 – 29.10 (жёлтый)
     seg4 = df2[(df2["День"] >= b4) & (df2["День"] <= b5)]
     fig2.add_trace(
         go.Scatter(
@@ -460,6 +465,7 @@ else:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     fig2.update_yaxes(tickformat=".2%")
+
     st.plotly_chart(fig2, use_container_width=True)
 
     # ---------------- ТАБЛИЦЫ ----------------
@@ -472,32 +478,37 @@ else:
         win["CTR (в %)"] = win["CTR"].map(lambda x: f"{x:.2%}")
         return win[["Дата", "CTR (в %)"]]
 
-    # маленький помощник для html-таблицы с подсветкой строки
     def render_small_table(df_table, title, highlight_date, color_hex):
+        """рендерит компактную html-таблицу с подсветкой целевого дня"""
         st.markdown(f"**{title}**")
-        html = "<table style='width:260px;border-collapse:collapse;font-size:0.85rem;'>"
-        html += "<tr><th style='text-align:left;padding:4px 6px;border-bottom:1px solid #555;'>Дата</th>" \
-                "<th style='text-align:right;padding:4px 6px;border-bottom:1px solid #555;'>CTR</th></tr>"
+        html = "<table style='width:100%;max-width:260px;border-collapse:collapse;font-size:0.85rem;'>"
+        html += (
+            "<tr>"
+            "<th style='text-align:left;padding:4px 6px;border-bottom:1px solid #555;'>Дата</th>"
+            "<th style='text-align:right;padding:4px 6px;border-bottom:1px solid #555;'>CTR</th>"
+            "</tr>"
+        )
+        target_str = highlight_date.strftime("%d.%m.%Y")
         for _, row in df_table.iterrows():
             bg = ""
-            if row['Дата'] == highlight_date.strftime("%d.%m.%Y"):
+            if row["Дата"] == target_str:
                 bg = f"background-color:{color_hex};"
             html += (
                 f"<tr style='{bg}'>"
                 f"<td style='padding:3px 6px;'>{row['Дата']}</td>"
-                f"<td style='padding:3px 6px;text-align:right;'>{row['CTR (в % )'] if 'CTR (в % )' in row else row['CTR (в %)']}</td>"
+                f"<td style='padding:3px 6px;text-align:right;'>{row['CTR (в %)']}</td>"
                 f"</tr>"
             )
         html += "</table>"
         st.markdown(html, unsafe_allow_html=True)
 
-    # окна вокруг дат (оставлю ±3 дня, как обсуждали)
+    # собираем окна вокруг ключевых дат
     win_b1 = make_window(df2, b1, 3)
     win_b2 = make_window(df2, b2, 3)
     win_b3 = make_window(df2, b3, 3)
     win_b4 = make_window(df2, b4, 3)
 
-    # четыре колонки с маленькими таблицами
+    # рендерим 4 маленьких таблички в ряд
     c1, c2, c3, c4 = st.columns(4)
 
     with c1:
@@ -505,29 +516,28 @@ else:
             win_b1,
             "Старт периода (23.04)",
             b1,
-            "#8DB5FF55",  # полупрозрачный синий
+            "#8DB5FF55",  # синий полупрозрачный
         )
     with c2:
         render_small_table(
             win_b2,
             "Переход 07.07 → зелёный",
             b2,
-            "#66CC9955",
+            "#66CC9955",  # зелёный
         )
     with c3:
         render_small_table(
             win_b3,
             "Переход 14.08 → оранжевый",
             b3,
-            "#FF9F4355",
+            "#FF9F4355",  # оранжевый
         )
     with c4:
         render_small_table(
             win_b4,
             "Переход 22.10 → жёлтый",
             b4,
-            "#FFDD5755",
+            "#FFDD5755",  # жёлтый
         )
 
-    )
 
