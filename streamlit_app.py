@@ -428,7 +428,7 @@ if page == "Итоги":
     metrics = sorted(metrics, key=lambda x: x["value"], reverse=True)
 
     # --- карточки ---
-       # --- карточки ---
+        # --- карточки ---
     cards = []
     for m in metrics:
         cards.append(
@@ -440,12 +440,17 @@ if page == "Итоги":
         )
 
     cards_html = (
-        "<div style='display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap;'>"
+        "<div style='display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.5rem;'>"
         + "".join(cards)
         + "</div>"
+        "<div style='color:#9ca3af;margin-bottom:1.5rem;'>"
+        "Наличие признака в день пикового CTR в диапазоне 14 дней"
+        "</div>"
     )
 
     st.markdown(cards_html, unsafe_allow_html=True)
+
+    
 
     # --- 1) таблица по CTR ---
     st.markdown("#### 1) Дни по CTR выше локального среднего (±7 дней)")
