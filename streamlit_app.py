@@ -428,15 +428,23 @@ if page == "Итоги":
     metrics = sorted(metrics, key=lambda x: x["value"], reverse=True)
 
     # --- карточки ---
-    cards_html = "<div style='display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap;'>"
+       # --- карточки ---
+    cards = []
     for m in metrics:
-        cards_html += f"""
-            <div style="background:#1f2937;border:1px solid #374151;border-radius:0.75rem;padding:0.75rem 1rem;min-width:190px;">
-                <div style="font-size:0.7rem;color:#9ca3af;">{m['title']}</div>
-                <div style="font-size:1.6rem;font-weight:600;">{m['value']:.1f}%</div>
-            </div>
-        """
-    cards_html += "</div>"
+        cards.append(
+            f"<div style='background:#1f2937;border:1px solid #374151;"
+            f"border-radius:0.75rem;padding:0.75rem 1rem;min-width:190px;'>"
+            f"<div style='font-size:0.7rem;color:#9ca3af;'>{m['title']}</div>"
+            f"<div style='font-size:1.6rem;font-weight:600;'>{m['value']:.1f}%</div>"
+            f"</div>"
+        )
+
+    cards_html = (
+        "<div style='display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap;'>"
+        + "".join(cards)
+        + "</div>"
+    )
+
     st.markdown(cards_html, unsafe_allow_html=True)
 
     # --- 1) таблица по CTR ---
