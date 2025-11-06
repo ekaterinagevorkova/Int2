@@ -8,7 +8,6 @@ import io
 # -----------------------------------------------------
 st.set_page_config(page_title="CTR // Данные", layout="wide")
 
-
 # -----------------------------------------------------
 # УТИЛИТЫ ДЛЯ СЕКРЕТОВ
 # -----------------------------------------------------
@@ -61,10 +60,7 @@ def _get_auth_password(default: str = "SportsTeam") -> str:
         # вложенный
         try:
             auth_sect = s["AUTH"]
-            if hasattr(auth_sect, "get"):
-                val = auth_sect.get("PASSWORD")
-            else:
-                val = auth_sect["PASSWORD"]
+            val = auth_sect.get("PASSWORD") if hasattr(auth_sect, "get") else auth_sect["PASSWORD"]
             if val:
                 return str(val)
         except Exception:
@@ -84,7 +80,7 @@ def _get_auth_password(default: str = "SportsTeam") -> str:
 
 def read_secret_csv(section: str, key: str, date_col: str = None) -> pd.DataFrame:
     """
-    Читает CSV из секретов (вложенный или плоский ключ).
+    Читает обычный CSV из секретов (вложенный/плоский ключ).
     Если указан date_col — приводит к datetime и сортирует.
     """
     txt = _resolve_secret(section, key)
@@ -92,14 +88,71 @@ def read_secret_csv(section: str, key: str, date_col: str = None) -> pd.DataFram
         return pd.DataFrame()
     df = pd.read_csv(io.StringIO(str(txt)))
     if date_col and date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col])
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
         df = df.sort_values(date_col).reset_index(drop=True)
+    return df
+
+
+def read_pct_series(section: str, key: str) -> pd.DataFrame:
+    """
+    Читает «ломаный» CSV вида:
+      date,pct
+      2025-08-18,0,26 %
+    Склеивает второй и третий «столбцы» в одно поле pct: "0,26 %".
+    Возвращает DataFrame с колонками ["День","CTR"] (CTR как float 0.xx).
+    """
+    txt = _resolve_secret(section, key)
+    if not txt or not txt.strip():
+        return pd.DataFrame(columns=["День", "CTR"])
+
+    lines = [ln.strip() for ln in str(txt).strip().splitlines() if ln.strip()]
+    if not lines:
+        return pd.DataFrame(columns=["День", "CTR"])
+
+    # пропускаем заголовок
+    data_rows = []
+    for ln in lines[1:]:
+        # Надёжно режем только на 3 части максимум: "YYYY-MM-DD,0,26 %"
+        parts = ln.split(",", 2)
+        if len(parts) == 1:
+            continue
+        if len(parts) == 2:
+            date_s, pct_s = parts[0].strip(), parts[1].strip()
+        else:
+            date_s, left, right = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            pct_s = f"{left},{right}"  # => "0,26 %"
+        if not date_s:
+            continue
+        data_rows.append((date_s, pct_s))
+
+    if not data_rows:
+        return pd.DataFrame(columns=["День", "CTR"])
+
+    df = pd.DataFrame(data_rows, columns=["День", "pct"])
+    df["День"] = pd.to_datetime(df["День"], errors="coerce")
+    df = df.dropna(subset=["День"])
+
+    def pct_str_to_float(x: str):
+        # "0,23 %" -> 0.0023 ; пустые -> None
+        if pd.isna(x):
+            return None
+        if not isinstance(x, str):
+            return None
+        x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
+        try:
+            return float(x) / 100.0
+        except Exception:
+            return None
+
+    df["CTR"] = df["pct"].apply(pct_str_to_float)
+    df = df.dropna(subset=["CTR"])[["День", "CTR"]].sort_values("День").reset_index(drop=True)
     return df
 
 
 def pct_str_to_float(x: str):
     """
     "0,23 %" -> 0.0023 ; пустые -> None
+    (для общего использования — например, если где-то ещё прилетит строковый процент)
     """
     if pd.isna(x):
         return None
@@ -111,9 +164,8 @@ def pct_str_to_float(x: str):
     except Exception:
         return None
 
-
 # -----------------------------------------------------
-# ЭКРАН АВТОРИЗАЦИИ (пароль берётся из секретов)
+# ЭКРАН АВТОРИЗАЦИИ (пароль из секретов)
 # -----------------------------------------------------
 if "auth_ok" not in st.session_state:
     st.session_state.auth_ok = False
@@ -135,7 +187,6 @@ if not st.session_state.auth_ok:
         st.rerun()
     st.stop()
 
-
 # -----------------------------------------------------
 # ЗАГРУЗКА ДАННЫХ ИЗ СЕКРЕТОВ
 # -----------------------------------------------------
@@ -148,41 +199,33 @@ df_section = read_secret_csv("SECTION_TRAFFIC", "CSV", date_col="Период")
 # События
 df_events = read_secret_csv("EVENTS", "CSV")
 if not df_events.empty:
-    df_events["начало"] = pd.to_datetime(df_events["начало"])
-    df_events["окончание"] = pd.to_datetime(df_events["окончание"])
+    df_events["начало"] = pd.to_datetime(df_events["начало"], errors="coerce")
+    df_events["окончание"] = pd.to_datetime(df_events["окончание"], errors="coerce")
 
-# Другие РК (серии с процентами)
-df_F_raw = read_secret_csv("OTHER_CAMPAIGNS", "SERIES_F", date_col="date")
-if not df_F_raw.empty:
-    df_F_raw.rename(columns={"date": "День", "pct": "pct"}, inplace=True)
-    df_F_raw["CTR"] = df_F_raw["pct"].apply(pct_str_to_float)
-    df_F = df_F_raw.dropna(subset=["CTR"])[["День", "CTR"]].sort_values("День").reset_index(drop=True)
-else:
-    df_F = pd.DataFrame(columns=["День", "CTR"])
-
-df_TGF_raw = read_secret_csv("OTHER_CAMPAIGNS", "SERIES_TGF", date_col="date")
-if not df_TGF_raw.empty:
-    df_TGF_raw.rename(columns={"date": "День", "pct": "pct"}, inplace=True)
-    df_TGF_raw["CTR"] = df_TGF_raw["pct"].apply(pct_str_to_float)
-    df_TGF = df_TGF_raw.dropna(subset=["CTR"])[["День", "CTR"]].sort_values("День").reset_index(drop=True)
-else:
-    df_TGF = pd.DataFrame(columns=["День", "CTR"])
+# Другие РК (серии с процентами — ломаный CSV)
+df_F = read_pct_series("OTHER_CAMPAIGNS", "SERIES_F")
+df_TGF = read_pct_series("OTHER_CAMPAIGNS", "SERIES_TGF")
 
 # Общий трафик N / V / O
 df_N = read_secret_csv("GLOBAL_TRAFFIC", "N", date_col="date")
 df_V = read_secret_csv("GLOBAL_TRAFFIC", "V", date_col="date")
 df_O = read_secret_csv("GLOBAL_TRAFFIC", "O", date_col="date")
 
-
 # -----------------------------------------------------
 # ПОДГОТОВКА ОСНОВНЫХ ДФ
 # -----------------------------------------------------
 if not df_ctr.empty:
-    df_ctr["День"] = pd.to_datetime(df_ctr["День"])
+    df_ctr["День"] = pd.to_datetime(df_ctr["День"], errors="coerce")
+    # числовые колонки на всякий случай
+    for col in ["Просмотры", "CTR"]:
+        if col in df_ctr.columns:
+            df_ctr[col] = pd.to_numeric(df_ctr[col], errors="coerce")
     df_ctr = df_ctr.sort_values("День").reset_index(drop=True)
 
 if not df_section.empty:
-    df_section["Период"] = pd.to_datetime(df_section["Период"])
+    df_section["Период"] = pd.to_datetime(df_section["Период"], errors="coerce")
+    if "Просмотры" in df_section.columns:
+        df_section["Просмотры"] = pd.to_numeric(df_section["Просмотры"], errors="coerce")
     df_section = df_section.sort_values("Период").reset_index(drop=True)
 
 # Допсерии для «Другие РК»
@@ -190,7 +233,6 @@ EXTRA_SERIES = [
     {"name": "Ф", "df": df_F, "style": {"dash": "dot", "width": 2.2, "color": "rgba(255,99,132,1)", "marker_size": 4}},
     {"name": "ТГ-Ф", "df": df_TGF, "style": {"dash": "dash", "width": 2.2, "color": "rgba(46,204,113,1)", "marker_size": 4}},
 ]
-
 
 # -----------------------------------------------------
 # ВИЗУАЛЬНЫЙ СЕЛЕКТОР СТРАНИЦ
@@ -211,7 +253,6 @@ with st.container():
         horizontal=True,
         label_visibility="collapsed",
     )
-
 
 # =====================================================
 # 1) ИТОГИ
@@ -429,6 +470,7 @@ elif page == "Спортивные события":
 
     st.markdown(f"**Зависимых сдвигов:** {dependent_count}")
 
+    peaks = df_view.sort_values("CTR", descending=False).head(0)  # защитный хак, переприсвоим ниже
     peaks = df_view.sort_values("CTR", ascending=False).head(top_n).copy()
     peaks["Дата"] = peaks["День"].dt.strftime("%d.%m.%Y")
     peaks["CTR (в %)"] = peaks["CTR"].map(lambda x: f"{x:.2%}")
@@ -453,7 +495,7 @@ elif page == "Трафик в разделе":
     with col_c:
         date_from, date_to = st.slider(
             "Диапазон дат", min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
-            value=(min_date.to_pydatetime(), max_value=max_date.to_pydatetime()), format="DD.MM.YYYY",
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()), format="DD.MM.YYYY",
         )
         trend_mode = st.radio("Агрегация тренда", options=["По неделям","По месяцам"], index=0, horizontal=True)
 
@@ -488,7 +530,7 @@ elif page == "Трафик в разделе":
     figm = go.Figure()
     figm.add_trace(go.Scatter(x=agg["День"], y=agg["CTR"], mode="lines+markers", name=f"CTR (ср. за {'неделю' if trend_mode=='По неделям' else 'месяц'})",
                               line=dict(color="rgba(255,80,80,1)", width=2.6), marker=dict(size=5),
-                              hovertemplate=("%{x|%d.%m.%Y}" if trend_mode=="По месяцам" else "%{x|%d.%m.%Y}") + "<br>CTR (ср.): %{y:.2%}<extra></extra>", yaxis="y1"))
+                              hovertemplate="%{x|%d.%m.%Y}<br>CTR (ср.): %{y:.2%}<extra></extra>", yaxis="y1"))
     figm.add_trace(go.Scatter(x=agg["День"], y=agg["Просмотры (раздел)"], mode="lines+markers", name=f"Просмотры (сумма за {'неделю' if trend_mode=='По неделям' else 'месяц'})",
                               line=dict(color="rgba(80,140,255,1)", width=2.4), marker=dict(size=5),
                               hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2"))
@@ -568,8 +610,12 @@ elif page == "Другие РК":
                        "df": s["df"].copy().dropna().sort_values("День"),
                        "style": s.get("style", {"dash":"dot","width":2.2,"color":"rgba(255,99,132,1)","marker_size":4})})
 
-    min_date = min([s["df"]["День"].min() for s in series if not s["df"].empty])
-    max_date = max([s["df"]["День"].max() for s in series if not s["df"].empty])
+    # безопасные границы
+    bounds = []
+    for s in series:
+        if not s["df"].empty:
+            bounds.append((s["df"]["День"].min(), s["df"]["День"].max()))
+    min_date = min(b[0] for b in bounds); max_date = max(b[1] for b in bounds)
 
     st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
     col_l, col_c, col_r = st.columns([1, 2.5, 1])
@@ -737,5 +783,3 @@ else:  # "Общий трафик"
                       hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig, use_container_width=True)
-
-
