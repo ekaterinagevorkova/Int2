@@ -1,350 +1,19 @@
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import io
-
-# -----------------------------------------------------
-# НАСТРОЙКА
-# -----------------------------------------------------
-st.set_page_config(page_title="CTR // Данные", layout="wide")
-
-# -----------------------------------------------------
-# УТИЛИТЫ ДЛЯ СЕКРЕТОВ
-# -----------------------------------------------------
-def _resolve_secret(section: str, key: str):
-    """
-    Возвращает значение секрета как строку, если оно существует.
-    Поддерживает оба формата хранения:
-      1) вложенный: st.secrets[section][key]
-      2) плоский:   st.secrets[f"{section}_{key}"]
-    """
-    # 1) вложенный
-    try:
-        sect = st.secrets[section]
-        try:
-            val = sect.get(key) if hasattr(sect, "get") else sect[key]
-        except Exception:
-            val = None
-        if val is not None:
-            return str(val)
-    except Exception:
-        pass
-
-    # 2) плоский
-    flat_key = f"{section}_{key}"
-    try:
-        if hasattr(st.secrets, "get"):
-            val = st.secrets.get(flat_key)
-            if val is not None:
-                return str(val)
-        else:
-            if flat_key in st.secrets:
-                return str(st.secrets[flat_key])
-    except Exception:
-        pass
-
-    return None
-
-
-def _get_auth_password(default: str = "SportsTeam") -> str:
-    """
-    Пароль для авторизации берём из секретов:
-      [AUTH]
-      PASSWORD = "..."
-    или
-      AUTH_PASSWORD = "..."
-    Фолбэк: default.
-    """
-    try:
-        s = st.secrets
-        # вложенный
-        try:
-            auth_sect = s["AUTH"]
-            val = auth_sect.get("PASSWORD") if hasattr(auth_sect, "get") else auth_sect["PASSWORD"]
-            if val:
-                return str(val)
-        except Exception:
-            pass
-        # плоский
-        if hasattr(s, "get"):
-            val = s.get("AUTH_PASSWORD")
-            if val:
-                return str(val)
-        else:
-            if "AUTH_PASSWORD" in s:
-                return str(s["AUTH_PASSWORD"])
-    except Exception:
-        pass
-    return default
-
-
-def read_secret_csv(section: str, key: str, date_col: str = None) -> pd.DataFrame:
-    """
-    Читает обычный CSV из секретов (вложенный/плоский ключ).
-    Если указан date_col — приводит к datetime и сортирует.
-    """
-    txt = _resolve_secret(section, key)
-    if not txt or not str(txt).strip():
-        return pd.DataFrame()
-    df = pd.read_csv(io.StringIO(str(txt)))
-    if date_col and date_col in df.columns:
-        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-        df = df.sort_values(date_col).reset_index(drop=True)
-    return df
-
-
-def read_pct_series(section: str, key: str) -> pd.DataFrame:
-    """
-    Читает «ломаный» CSV вида:
-      date,pct
-      2025-08-18,0,26 %
-    Склеивает второй и третий «столбцы» в одно поле pct: "0,26 %".
-    Возвращает DataFrame с колонками ["День","CTR"] (CTR как float 0.xx).
-    """
-    txt = _resolve_secret(section, key)
-    if not txt or not txt.strip():
-        return pd.DataFrame(columns=["День", "CTR"])
-
-    lines = [ln.strip() for ln in str(txt).strip().splitlines() if ln.strip()]
-    if not lines:
-        return pd.DataFrame(columns=["День", "CTR"])
-
-    # пропускаем заголовок
-    data_rows = []
-    for ln in lines[1:]:
-        # Надёжно режем только на 3 части максимум: "YYYY-MM-DD,0,26 %"
-        parts = ln.split(",", 2)
-        if len(parts) == 1:
-            continue
-        if len(parts) == 2:
-            date_s, pct_s = parts[0].strip(), parts[1].strip()
-        else:
-            date_s, left, right = parts[0].strip(), parts[1].strip(), parts[2].strip()
-            pct_s = f"{left},{right}"  # => "0,26 %"
-        if not date_s:
-            continue
-        data_rows.append((date_s, pct_s))
-
-    if not data_rows:
-        return pd.DataFrame(columns=["День", "CTR"])
-
-    df = pd.DataFrame(data_rows, columns=["День", "pct"])
-    df["День"] = pd.to_datetime(df["День"], errors="coerce")
-    df = df.dropna(subset=["День"])
-
-    def pct_str_to_float(x: str):
-        # "0,23 %" -> 0.0023 ; пустые -> None
-        if pd.isna(x):
-            return None
-        if not isinstance(x, str):
-            return None
-        x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
-        try:
-            return float(x) / 100.0
-        except Exception:
-            return None
-
-    df["CTR"] = df["pct"].apply(pct_str_to_float)
-    df = df.dropna(subset=["CTR"])[["День", "CTR"]].sort_values("День").reset_index(drop=True)
-    return df
-
-
-def pct_str_to_float(x: str):
-    """
-    "0,23 %" -> 0.0023 ; пустые -> None
-    (для общего использования — например, если где-то ещё прилетит строковый процент)
-    """
-    if pd.isna(x):
-        return None
-    if not isinstance(x, str):
-        return None
-    x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
-    try:
-        return float(x) / 100.0
-    except Exception:
-        return None
-
-# -----------------------------------------------------
-# ЭКРАН АВТОРИЗАЦИИ (пароль из секретов)
-# -----------------------------------------------------
-if "auth_ok" not in st.session_state:
-    st.session_state.auth_ok = False
-
-if not st.session_state.auth_ok:
-    st.markdown(
-        """
-        <div style="text-align:center;margin-top:4rem;">
-            <h2>Доступ</h2>
-            <p style="color:#9ca3af;">Введите пароль, чтобы продолжить</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    auth_pwd = _get_auth_password()
-    pwd = st.text_input("Пароль", type="password", label_visibility="collapsed")
-    if pwd == auth_pwd:
-        st.session_state.auth_ok = True
-        st.rerun()
-    st.stop()
-
-# -----------------------------------------------------
-# ЗАГРУЗКА ДАННЫХ ИЗ СЕКРЕТОВ
-# -----------------------------------------------------
-# CTR (основная серия)
-df_ctr = read_secret_csv("CTR", "DATA", date_col="День")
-
-# Трафик "в разделе"
-df_section = read_secret_csv("SECTION_TRAFFIC", "CSV", date_col="Период")
-
-# События
-df_events = read_secret_csv("EVENTS", "CSV")
-if not df_events.empty:
-    df_events["начало"] = pd.to_datetime(df_events["начало"], errors="coerce")
-    df_events["окончание"] = pd.to_datetime(df_events["окончание"], errors="coerce")
-
-# Другие РК (серии с процентами — ломаный CSV)
-df_F = read_pct_series("OTHER_CAMPAIGNS", "SERIES_F")
-df_TGF = read_pct_series("OTHER_CAMPAIGNS", "SERIES_TGF")
-
-# Общий трафик N / V / O
-df_N = read_secret_csv("GLOBAL_TRAFFIC", "N", date_col="date")
-df_V = read_secret_csv("GLOBAL_TRAFFIC", "V", date_col="date")
-df_O = read_secret_csv("GLOBAL_TRAFFIC", "O", date_col="date")
-
-# -----------------------------------------------------
-# ПОДГОТОВКА ОСНОВНЫХ ДФ
-# -----------------------------------------------------
-if not df_ctr.empty:
-    df_ctr["День"] = pd.to_datetime(df_ctr["День"], errors="coerce")
-    # числовые колонки на всякий случай
-    for col in ["Просмотры", "CTR"]:
-        if col in df_ctr.columns:
-            df_ctr[col] = pd.to_numeric(df_ctr[col], errors="coerce")
-    df_ctr = df_ctr.sort_values("День").reset_index(drop=True)
-
-if not df_section.empty:
-    df_section["Период"] = pd.to_datetime(df_section["Период"], errors="coerce")
-    if "Просмотры" in df_section.columns:
-        df_section["Просмотры"] = pd.to_numeric(df_section["Просмотры"], errors="coerce")
-    df_section = df_section.sort_values("Период").reset_index(drop=True)
-
-# Допсерии для «Другие РК»
-EXTRA_SERIES = [
-    {"name": "Ф", "df": df_F, "style": {"dash": "dot", "width": 2.2, "color": "rgba(255,99,132,1)", "marker_size": 4}},
-    {"name": "ТГ-Ф", "df": df_TGF, "style": {"dash": "dash", "width": 2.2, "color": "rgba(46,204,113,1)", "marker_size": 4}},
-]
-
-# -----------------------------------------------------
-# ВИЗУАЛЬНЫЙ СЕЛЕКТОР СТРАНИЦ
-# -----------------------------------------------------
-with st.container():
-    st.markdown(
-        """
-        <style>
-        .page-pill { display:inline-block; margin-right:0.5rem; margin-bottom:0.4rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown("<div style='margin-bottom:0.4rem;font-weight:500;'>Выбор раздела</div>", unsafe_allow_html=True)
-    page = st.radio(
-        "",
-        ("Итоги","Смена креативов","Спортивные события","Трафик в разделе","Просмотры","Другие РК","Общий трафик"),
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-
-# =====================================================
-# 1) ИТОГИ
-# =====================================================
-if page == "Итоги":
-    st.markdown("### Итоги")
-
-    stage_2_start = pd.to_datetime("2025-07-07")
-    stage_3_start = pd.to_datetime("2025-08-14")
-    stage_4_start = pd.to_datetime("2025-10-22")
-    stage_switches = [stage_2_start, stage_3_start, stage_4_start]
-
-    df_all = df_ctr.dropna(subset=["CTR"]).copy().sort_values("День").reset_index(drop=True)
-    global_views_mean = df_all["Просмотры"].mean()
-
-    def exact_events_for_day(d: pd.Timestamp) -> str:
-        if df_events.empty: return ""
-        names = []
-        for _, ev in df_events.iterrows():
-            if ev["начало"].date() == d.date() or ev["окончание"].date() == d.date():
-                names.append(ev["название"])
-        return ", ".join(names)
-
-    def stage_for_day(d: pd.Timestamp) -> int:
-        if d < stage_2_start: return 1
-        elif d < stage_3_start: return 2
-        elif d < stage_4_start: return 3
-        else: return 4
-
-    def is_stage_switch_near(d: pd.Timestamp) -> str:
-        for sw in stage_switches:
-            if sw < d <= sw + pd.Timedelta(days=7):
-                return "да"
-        return "нет"
-
-    df_all["Точные события"] = df_all["День"].apply(exact_events_for_day)
-    df_all["Этап"] = df_all["День"].apply(stage_for_day)
-    df_all["Смена креативов"] = df_all["День"].apply(is_stage_switch_near)
-    df_all["Дата"] = df_all["День"].dt.strftime("%d.%m.%Y")
-    df_all["CTR (в %)"] = df_all["CTR"].map(lambda x: f"{x:.2%}")
-    df_all["Просмотры выше среднего"] = df_all["Просмотры"].apply(lambda v: "да" if v >= global_views_mean else "нет")
-
-    min_day, max_day = df_all["День"].min(), df_all["День"].max()
-    local_views_means, local_ctr_means, ctr_local_flags, views_local_flags = [], [], [], []
-
-    for _, row in df_all.iterrows():
-        cur_day = row["День"]
-        date_min = max(min_day, cur_day - pd.Timedelta(days=7))
-        date_max = min(max_day, cur_day + pd.Timedelta(days=7))
-        window = df_all[(df_all["День"] >= date_min) & (df_all["День"] <= date_max)]
-        lv_mean = window["Просмотры"].mean(); local_views_means.append(lv_mean)
-        views_local_flags.append("да" if row["Просмотры"] >= lv_mean else "нет")
-        lc_mean = window["CTR"].mean(); local_ctr_means.append(lc_mean)
-        ctr_local_flags.append("да" if row["CTR"] >= lc_mean else "нет")
-
-    df_all["Локальное среднее просмотров"] = local_views_means
-    df_all["Просмотры выше локального"] = views_local_flags
-    df_all["Локальный CTR"] = local_ctr_means
-    df_all["CTR выше локального"] = ctr_local_flags
-    df_all["Локальный CTR (в %)"] = df_all["Локальный CTR"].map(lambda x: f"{x:.2%}")
-
-    df_table_ctr = df_all[df_all["CTR выше локального"] == "да"].copy().sort_values("CTR", ascending=False)
-    total_peaks = len(df_table_ctr)
-    events_count = (df_table_ctr["Точные события"] != "").sum()
-    views_high_global = (df_table_ctr["Просмотры выше среднего"] == "да").sum()
-    views_high_local = (df_table_ctr["Просмотры выше локального"] == "да").sum()
-    stage_switch_count = (df_table_ctr["Смена креативов"] == "да").sum()
-
-    def to_pct(count): return 0.0 if total_peaks == 0 else (count / total_peaks) * 100.0
-
-    metrics = [
-        {"title": "Просмотры выше локального (±7 дн)", "value": to_pct(views_high_local)},
-        {"title": "Просмотры выше среднего (глобально)", "value": to_pct(views_high_global)},
-        {"title": "Смена креативов (+7 дн)", "value": to_pct(stage_switch_count)},
-        {"title": "События", "value": to_pct(events_count)},
-    ]
-    metrics = sorted(metrics, key=lambda x: x["value"], reverse=True)
-
-    cards = []
-    for m in metrics:
-        cards.append(
-            f"<div style='background:#111827;border:1px solid #1f2937;border-radius:0.75rem;padding:0.75rem 1rem;min-width:190px;'>"
-            f"<div style='font-size:0.7rem;color:#cbd5e1;'>{m['title']}</div>"
             f"<div style='font-size:1.6rem;font-weight:700;color:#f9fafb'>{m['value']:.1f}%</div>"
             f"</div>"
         )
-    cards_html = "<div style='display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.5rem;'>" + "".join(cards) + "</div>" \
-                 "<div style='color:#94a3b8;margin-bottom:1.5rem;'>Наличие признака в день пикового CTR в диапазоне 14 дней</div>"
+    cards_html = (
+        "<div style='display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:0.5rem;'>"
+        + "".join(cards)
+        + "</div>"
+        "<div style='color:#94a3b8;margin-bottom:1.5rem;'>Наличие признака в день пикового CTR в диапазоне 14 дней</div>"
+    )
     st.markdown(cards_html, unsafe_allow_html=True)
 
     st.markdown("#### 1) Дни по CTR выше локального среднего (±7 дней)")
-    cols_ctr = ["Дата","CTR (в %)","Локальный CTR (в %)","Точные события","Просмотры выше среднего","Просмотры выше локального","Этап","Смена креативов"]
+    cols_ctr = [
+        "Дата","CTR (в %)","Локальный CTR (в %)","Точные события",
+        "Просмотры выше среднего","Просмотры выше локального","Этап","Смена креативов"
+    ]
     cols_ctr = [c for c in cols_ctr if c in df_table_ctr.columns]
     st.dataframe(df_table_ctr[cols_ctr], use_container_width=True, hide_index=True)
     st.markdown(f"**Количество строк:** {len(df_table_ctr)}")
@@ -353,34 +22,52 @@ if page == "Итоги":
     df_table_all = df_all.sort_values("CTR", ascending=False)
     cols_all = [c for c in cols_ctr if c in df_table_all.columns]
     st.dataframe(df_table_all[cols_all], use_container_width=True, hide_index=True)
-    st.markdown("<div style='margin-top:1.5rem;color:#94a3b8;'>Наличие признака в день пикового CTR в диапазоне 14 дней</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='margin-top:1.5rem;color:#94a3b8;'>Наличие признака в день пикового CTR в диапазоне 14 дней</div>",
+        unsafe_allow_html=True,
+    )
 
 # =====================================================
 # 2) СМЕНА КРЕАТИВОВ
 # =====================================================
 elif page == "Смена креативов":
+    if df_ctr.empty or "CTR" not in df_ctr.columns:
+        st.warning("Нет валидных данных CTR для раздела «Смена креативов».")
+        st.stop()
+
     st.markdown("### CTR по этапам кампании (смены креативов)")
-    b1 = pd.to_datetime("2025-04-23"); b2 = pd.to_datetime("2025-07-07")
-    b3 = pd.to_datetime("2025-08-14"); b4 = pd.to_datetime("2025-10-22"); b5 = pd.to_datetime("2025-10-29")
+    b1 = pd.to_datetime("2025-04-23")
+    b2 = pd.to_datetime("2025-07-07")
+    b3 = pd.to_datetime("2025-08-14")
+    b4 = pd.to_datetime("2025-10-22")
+    b5 = pd.to_datetime("2025-10-29")
     df2 = df_ctr.dropna(subset=["CTR"]).copy()
 
     fig2 = go.Figure()
     seg1 = df2[(df2["День"] >= b1) & (df2["День"] < b2)]
-    fig2.add_trace(go.Scatter(x=seg1["День"], y=seg1["CTR"], mode="lines+markers", name="23.04 – 07.07",
-                              line=dict(color="rgba(141,181,255,1)", width=2.2), marker=dict(size=4),
-                              hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"))
+    fig2.add_trace(go.Scatter(
+        x=seg1["День"], y=seg1["CTR"], mode="lines+markers", name="23.04 – 07.07",
+        line=dict(color="rgba(141,181,255,1)", width=2.2), marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"
+    ))
     seg2 = df2[(df2["День"] >= b2) & (df2["День"] < b3)]
-    fig2.add_trace(go.Scatter(x=seg2["День"], y=seg2["CTR"], mode="lines+markers", name="07.07 – 14.08",
-                              line=dict(color="rgba(102,204,153,1)", width=2.2), marker=dict(size=4),
-                              hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"))
+    fig2.add_trace(go.Scatter(
+        x=seg2["День"], y=seg2["CTR"], mode="lines+markers", name="07.07 – 14.08",
+        line=dict(color="rgba(102,204,153,1)", width=2.2), marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"
+    ))
     seg3 = df2[(df2["День"] >= b3) & (df2["День"] < b4)]
-    fig2.add_trace(go.Scatter(x=seg3["День"], y=seg3["CTR"], mode="lines+markers", name="14.08 – 22.10",
-                              line=dict(color="rgba(255,159,67,1)", width=2.2), marker=dict(size=4),
-                              hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"))
+    fig2.add_trace(go.Scatter(
+        x=seg3["День"], y=seg3["CTR"], mode="lines+markers", name="14.08 – 22.10",
+        line=dict(color="rgba(255,159,67,1)", width=2.2), marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"
+    ))
     seg4 = df2[(df2["День"] >= b4) & (df2["День"] <= b5)]
-    fig2.add_trace(go.Scatter(x=seg4["День"], y=seg4["CTR"], mode="lines+markers", name="22.10 – 29.10",
-                              line=dict(color="rgba(255,221,87,1)", width=2.2), marker=dict(size=4),
-                              hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"))
+    fig2.add_trace(go.Scatter(
+        x=seg4["День"], y=seg4["CTR"], mode="lines+markers", name="22.10 – 29.10",
+        line=dict(color="rgba(255,221,87,1)", width=2.2), marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"
+    ))
 
     fig2.update_layout(
         height=520, margin=dict(l=20, r=20, t=40, b=40), xaxis_title="Дата", yaxis_title="CTR",
@@ -394,20 +81,31 @@ elif page == "Смена креативов":
 # 3) СПОРТИВНЫЕ СОБЫТИЯ
 # =====================================================
 elif page == "Спортивные события":
+    if df_ctr.empty or "CTR" not in df_ctr.columns:
+        st.warning("Нет валидных данных CTR для раздела «Спортивные события».")
+        st.stop()
+
     min_date = pd.to_datetime("2025-04-23")
     max_date = df_ctr["День"].max()
-    st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>",
+        unsafe_allow_html=True,
+    )
     col_l, col_c, col_r = st.columns([1, 2.5, 1])
     with col_c:
         date_from, date_to = st.slider(
             "Диапазон дат",
             min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
-            value=(min_date.to_pydatetime(), max_date.to_pydatetime()), format="DD.MM.YYYY",
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+            format="DD.MM.YYYY",
         )
         top_n = st.number_input("Пиков CTR вывести", min_value=3, max_value=50, value=15, step=1)
 
     date_from = pd.to_datetime(date_from); date_to = pd.to_datetime(date_to)
-    df_view = df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)].copy().dropna(subset=["CTR"]).sort_values("День")
+    df_view = (
+        df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)]
+        .copy().dropna(subset=["CTR"]).sort_values("День")
+    )
 
     def exact_events_for_day(d: pd.Timestamp) -> str:
         if df_events.empty: return ""
@@ -446,9 +144,11 @@ elif page == "Спортивные события":
     }
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_view["День"], y=df_view["CTR"], mode="lines+markers", name="CTR",
-                             line=dict(width=2.2, color="rgba(181, 220, 255, 1)"), marker=dict(size=4),
-                             hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"))
+    fig.add_trace(go.Scatter(
+        x=df_view["День"], y=df_view["CTR"], mode="lines+markers", name="CTR",
+        line=dict(width=2.2, color="rgba(181, 220, 255, 1)"), marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"
+    ))
 
     if not df_events.empty:
         for _, ev in df_events.iterrows():
@@ -458,31 +158,40 @@ elif page == "Спортивные события":
             fill = sport_colors.get(ev["вид спорта"], "rgba(255,255,255,0.05)")
             fig.add_vrect(x0=x0, x1=x1, fillcolor=fill, layer="below", line_width=0)
             fig.add_vline(x=ev["начало"], line_width=0.8, line_dash="dash", line_color="rgba(255,255,255,0.4)")
-            fig.add_annotation(x=x0, y=1.03, xref="x", yref="paper", text=ev["название"], showarrow=False, xanchor="left",
-                               font=dict(size=10, color="#ffffff"), textangle=65)
+            fig.add_annotation(
+                x=x0, y=1.03, xref="x", yref="paper", text=ev["название"], showarrow=False, xanchor="left",
+                font=dict(size=10, color="#ffffff"), textangle=65
+            )
 
-    fig.update_layout(height=560, margin=dict(l=20, r=20, t=90, b=40),
-                      xaxis_title="Дата", yaxis_title="CTR", hovermode="x unified",
-                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_layout(
+        height=560, margin=dict(l=20, r=20, t=90, b=40), xaxis_title="Дата", yaxis_title="CTR",
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)"
+    )
     fig.update_xaxes(range=[date_from, date_to], showgrid=False)
     fig.update_yaxes(showgrid=True, zeroline=False, tickformat=".2%")
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown(f"**Зависимых сдвигов:** {dependent_count}")
 
-    peaks = df_view.sort_values("CTR", descending=False).head(0)  # защитный хак, переприсвоим ниже
     peaks = df_view.sort_values("CTR", ascending=False).head(top_n).copy()
     peaks["Дата"] = peaks["День"].dt.strftime("%d.%m.%Y")
     peaks["CTR (в %)"] = peaks["CTR"].map(lambda x: f"{x:.2%}")
     peaks["Событие (точное)"] = peaks["День"].apply(exact_events_for_day)
     peaks["События (в интервале)"] = peaks["День"].apply(interval_events_for_day)
     st.markdown("### Пиковые значения CTR")
-    st.dataframe(peaks[["Дата","CTR (в %)","Событие (точное)","События (в интервале)"]], use_container_width=True, hide_index=True)
+    st.dataframe(
+        peaks[["Дата","CTR (в %)","Событие (точное)","События (в интервале)"]],
+        use_container_width=True, hide_index=True
+    )
 
 # =====================================================
 # 4) ТРАФИК В РАЗДЕЛЕ (CTR vs Просмотры "в разделе")
 # =====================================================
 elif page == "Трафик в разделе":
+    if df_ctr.empty or df_section.empty:
+        st.warning("Нужны данные CTR и трафика раздела.")
+        st.stop()
+
     st.markdown("### Трафик в разделе: CTR (красная) и Просмотры (синяя)")
 
     df_ctr_short = df_ctr[["День", "CTR"]].copy().sort_values("День")
@@ -504,59 +213,97 @@ elif page == "Трафик в разделе":
 
     # График 1: дневные значения
     figx = go.Figure()
-    figx.add_trace(go.Scatter(x=df_view["День"], y=df_view["CTR"], mode="lines+markers", name="CTR",
-                              line=dict(color="rgba(255,80,80,1)", width=2.2), marker=dict(size=4),
-                              hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y1"))
-    figx.add_trace(go.Scatter(x=df_view["День"], y=df_view["Просмотры (раздел)"], mode="lines+markers", name="Просмотры (раздел)",
-                              line=dict(color="rgba(80,140,255,1)", width=2.0), marker=dict(size=3),
-                              hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2"))
-    figx.update_layout(height=560, margin=dict(l=20, r=20, t=40, b=40),
-                       xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
-                       yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
-                       yaxis2=dict(title="Просмотры (раздел)", overlaying="y", side="right", showgrid=False),
-                       hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    figx.add_trace(go.Scatter(
+        x=df_view["День"], y=df_view["CTR"], mode="lines+markers", name="CTR",
+        line=dict(color="rgba(255,80,80,1)", width=2.2), marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y1"
+    ))
+    figx.add_trace(go.Scatter(
+        x=df_view["День"], y=df_view["Просмотры (раздел)"], mode="lines+markers", name="Просмотры (раздел)",
+        line=dict(color="rgba(80,140,255,1)", width=2.0), marker=dict(size=3),
+        hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2"
+    ))
+    figx.update_layout(
+        height=560, margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
+        yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
+        yaxis2=dict(title="Просмотры (раздел)", overlaying="y", side="right", showgrid=False),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(figx, use_container_width=True)
 
     # График 2: тренды
     st.markdown("### Тренды (агрегация)")
-    def monthly(df_in): return df_in.set_index("День").resample("MS").agg({"CTR":"mean","Просмотры (раздел)":"sum"}).reset_index()
+
+    def monthly(df_in):
+        return (
+            df_in.set_index("День")
+            .resample("MS")
+            .agg({"CTR":"mean","Просмотры (раздел)":"sum"})
+            .reset_index()
+        )
+
     def weekly(df_in):
-        out = df_in.set_index("День").resample("W-MON").agg({"CTR":"mean","Просмотры (раздел)":"sum"}).reset_index()
+        out = (
+            df_in.set_index("День")
+            .resample("W-MON")
+            .agg({"CTR":"mean","Просмотры (раздел)":"sum"})
+            .reset_index()
+        )
         out["label"] = out["День"].dt.strftime("%d.%m") + "–" + (out["День"]+pd.Timedelta(days=6)).dt.strftime("%d.%m.%Y")
         return out
 
     agg = weekly(df_view) if trend_mode=="По неделям" else monthly(df_view)
     figm = go.Figure()
-    figm.add_trace(go.Scatter(x=agg["День"], y=agg["CTR"], mode="lines+markers", name=f"CTR (ср. за {'неделю' if trend_mode=='По неделям' else 'месяц'})",
-                              line=dict(color="rgba(255,80,80,1)", width=2.6), marker=dict(size=5),
-                              hovertemplate="%{x|%d.%m.%Y}<br>CTR (ср.): %{y:.2%}<extra></extra>", yaxis="y1"))
-    figm.add_trace(go.Scatter(x=agg["День"], y=agg["Просмотры (раздел)"], mode="lines+markers", name=f"Просмотры (сумма за {'неделю' if trend_mode=='По неделям' else 'месяц'})",
-                              line=dict(color="rgba(80,140,255,1)", width=2.4), marker=dict(size=5),
-                              hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2"))
-    figm.update_layout(height=520, margin=dict(l=20, r=20, t=30, b=40),
-                       xaxis=dict(title="Недели (пн)" if trend_mode=="По неделям" else "Месяцы", showgrid=False),
-                       yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
-                       yaxis2=dict(title="Просмотры (сумма)", overlaying="y", side="right", showgrid=False),
-                       hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    figm.add_trace(go.Scatter(
+        x=agg["День"], y=agg["CTR"], mode="lines+markers",
+        name=f"CTR (ср. за {'неделю' if trend_mode=='По неделям' else 'месяц'})",
+        line=dict(color="rgba(255,80,80,1)", width=2.6), marker=dict(size=5),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR (ср.): %{y:.2%}<extra></extra>", yaxis="y1"
+    ))
+    figm.add_trace(go.Scatter(
+        x=agg["День"], y=agg["Просмотры (раздел)"], mode="lines+markers",
+        name=f"Просмотры (сумма за {'неделю' if trend_mode=='По неделям' else 'месяц'})",
+        line=dict(color="rgba(80,140,255,1)", width=2.4), marker=dict(size=5),
+        hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2"
+    ))
+    figm.update_layout(
+        height=520, margin=dict(l=20, r=20, t=30, b=40),
+        xaxis=dict(title="Недели (пн)" if trend_mode=="По неделям" else "Месяцы", showgrid=False),
+        yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
+        yaxis2=dict(title="Просмотры (сумма)", overlaying="y", side="right", showgrid=False),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(figm, use_container_width=True)
 
 # =====================================================
 # 5) ПРОСМОТРЫ (основные)
 # =====================================================
 elif page == "Просмотры":
+    if df_ctr.empty or "Просмотры" not in df_ctr.columns:
+        st.warning("Нет валидных данных для раздела «Просмотры».")
+        st.stop()
+
     st.markdown("### CTR vs Просмотры (по дням)")
     min_date = pd.to_datetime("2025-04-23"); max_date = df_ctr["День"].max()
     st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
     col_l, col_c, col_r = st.columns([1, 2.5, 1])
     with col_c:
-        date_from, date_to = st.slider("Диапазон дат", min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
-                                       value=(min_date.to_pydatetime(), max_date.to_pydatetime()), format="DD.MM.YYYY")
+        date_from, date_to = st.slider(
+            "Диапазон дат",
+            min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+            format="DD.MM.YYYY"
+        )
         top_n = st.number_input("Пиков CTR вывести", min_value=3, max_value=50, value=15, step=1)
 
     date_from = pd.to_datetime(date_from); date_to = pd.to_datetime(date_to)
-    df3 = df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)].copy().dropna(subset=["CTR"]).sort_values("День")
+    df3 = (
+        df_ctr[(df_ctr["День"] >= date_from) & (df_ctr["День"] <= date_to)]
+        .copy().dropna(subset=["CTR"]).sort_values("День")
+    )
     df3["CTR_prev"] = df3["CTR"].shift(1); df3["Views_prev"] = df3["Просмотры"].shift(1)
     df3["CTR_change"] = (df3["CTR"] - df3["CTR_prev"]) / df3["CTR_prev"]
     df3["Views_change"] = (df3["Просмотры"] - df3["Views_prev"]) / df3["Views_prev"]
@@ -570,28 +317,36 @@ elif page == "Просмотры":
     df3["joint_move"] = df3.apply(is_joint3, axis=1); joint_days = df3[df3["joint_move"]]
 
     fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=df3["День"], y=df3["CTR"], mode="lines+markers", name="CTR",
-                              line=dict(color="rgba(102,178,255,1)", width=2.2), marker=dict(size=4),
-                              hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y1"))
-    fig3.add_trace(go.Scatter(x=df3["День"], y=df3["Просмотры"], mode="lines+markers", name="Просмотры",
-                              line=dict(color="rgba(255,159,67,1)", width=2.0), marker=dict(size=3),
-                              hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2"))
+    fig3.add_trace(go.Scatter(
+        x=df3["День"], y=df3["CTR"], mode="lines+markers", name="CTR",
+        line=dict(color="rgba(102,178,255,1)", width=2.2), marker=dict(size=4),
+        hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y1"
+    ))
+    fig3.add_trace(go.Scatter(
+        x=df3["День"], y=df3["Просмотры"], mode="lines+markers", name="Просмотры",
+        line=dict(color="rgba(255,159,67,1)", width=2.0), marker=dict(size=3),
+        hovertemplate="%{x|%d.%m.%Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2"
+    ))
     for _, row in joint_days.iterrows():
         fig3.add_vline(x=row["День"], line_width=1.1, line_dash="dot", line_color="rgba(255,80,80,0.85)")
 
-    fig3.update_layout(height=560, margin=dict(l=20, r=20, t=40, b=40),
-                       xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
-                       yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
-                       yaxis2=dict(title="Просмотры", overlaying="y", side="right", showgrid=False),
-                       hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig3.update_layout(
+        height=560, margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
+        yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
+        yaxis2=dict(title="Просмотры", overlaying="y", side="right", showgrid=False),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(fig3, use_container_width=True)
 
     avg_views = df3["Просмотры"].mean()
     peaks3 = df3.sort_values("CTR", ascending=False).head(top_n).copy()
     peaks3["Дата"] = peaks3["День"].dt.strftime("%d.%m.%Y")
     peaks3["CTR (в %)"] = peaks3["CTR"].map(lambda x: f"{x:.2%}")
-    peaks3["Уровень просмотров"] = peaks3["Просмотры"].apply(lambda v: "выше среднего" if v >= avg_views else "ниже среднего")
+    peaks3["Уровень просмотров"] = peaks3["Просмотры"].apply(
+        lambda v: "выше среднего" if v >= avg_views else "ниже среднего"
+    )
     st.markdown("### Пиковые значения CTR в выбранный период")
     st.dataframe(peaks3[["Дата","CTR (в %)","Просмотры","Уровень просмотров"]], use_container_width=True, hide_index=True)
 
@@ -599,29 +354,42 @@ elif page == "Просмотры":
 # 6) ДРУГИЕ РК — сравнение CTR
 # =====================================================
 elif page == "Другие РК":
+    if df_ctr.empty and all(s["df"].empty for s in EXTRA_SERIES):
+        st.warning("Нет данных для сравнения кампаний.")
+        st.stop()
+
     st.markdown("### Другие РК: сравнение CTR")
 
-    base = df_ctr[["День", "CTR"]].dropna().copy().sort_values("День")
+    base = df_ctr[["День", "CTR"]].dropna().copy().sort_values("День") if not df_ctr.empty else pd.DataFrame(columns=["День","CTR"])
     series = []
-    series.append({"key":"BASE","label":"Основная серия","df":base.copy(),
-                   "style":{"dash":"solid","width":2.4,"color":"rgba(52,152,219,1)","marker_size":4}})
+    if not base.empty:
+        series.append({
+            "key":"BASE","label":"Основная серия","df":base.copy(),
+            "style":{"dash":"solid","width":2.4,"color":"rgba(52,152,219,1)","marker_size":4}
+        })
     for s in EXTRA_SERIES:
-        series.append({"key":f"EXTRA_{s['name']}","label":f"Серия «{s['name']}»",
-                       "df": s["df"].copy().dropna().sort_values("День"),
-                       "style": s.get("style", {"dash":"dot","width":2.2,"color":"rgba(255,99,132,1)","marker_size":4})})
+        series.append({
+            "key":f"EXTRA_{s['name']}",
+            "label":f"Серия «{s['name']}»",
+            "df": s["df"].copy().dropna().sort_values("День"),
+            "style": s.get("style", {"dash":"dot","width":2.2,"color":"rgba(255,99,132,1)","marker_size":4})
+        })
 
-    # безопасные границы
-    bounds = []
-    for s in series:
-        if not s["df"].empty:
-            bounds.append((s["df"]["День"].min(), s["df"]["День"].max()))
-    min_date = min(b[0] for b in bounds); max_date = max(b[1] for b in bounds)
+    valid_series = [s for s in series if not s["df"].empty]
+    if not valid_series:
+        st.warning("Нет валидных рядов для отображения.")
+        st.stop()
+
+    min_date = min(s["df"]["День"].min() for s in valid_series)
+    max_date = max(s["df"]["День"].max() for s in valid_series)
 
     st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
     col_l, col_c, col_r = st.columns([1, 2.5, 1])
     with col_c:
-        date_from, date_to = st.slider("Диапазон дат", min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
-                                       value=(min_date.to_pydatetime(), max_date.to_pydatetime()), format="DD.MM.YYYY")
+        date_from, date_to = st.slider(
+            "Диапазон дат", min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()), format="DD.MM.YYYY"
+        )
 
     date_from = pd.to_datetime(date_from); date_to = pd.to_datetime(date_to)
 
@@ -633,10 +401,12 @@ elif page == "Другие РК":
 
     def add_trace(fig, df_src, label, style):
         if df_src.empty: return
-        fig.add_trace(go.Scatter(x=df_src["День"], y=df_src["CTR"], mode="lines+markers", name=label,
-                                 line=dict(color=style.get("color"), width=style.get("width"), dash=style.get("dash")),
-                                 marker=dict(size=style.get("marker_size",4)),
-                                 hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"))
+        fig.add_trace(go.Scatter(
+            x=df_src["День"], y=df_src["CTR"], mode="lines+markers", name=label,
+            line=dict(color=style.get("color"), width=style.get("width"), dash=style.get("dash")),
+            marker=dict(size=style.get("marker_size",4)),
+            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>"
+        ))
 
     def with_sign(df_in: pd.DataFrame) -> pd.DataFrame:
         d = df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)].copy().sort_values("День")
@@ -644,7 +414,7 @@ elif page == "Другие РК":
         d["sign"] = d["chg"].apply(lambda v: 1 if pd.notna(v) and v > 0 else (-1 if pd.notna(v) and v < 0 else 0))
         return d[["День","CTR","sign"]]
 
-    series_view = [{**s, "dfv": with_sign(s["df"])} for s in series]
+    series_view = [{**s, "dfv": with_sign(s["df"])} for s in valid_series]
 
     all_dates = pd.DataFrame({"День": pd.date_range(date_from, date_to, freq="D")})
     signs_df = all_dates.copy()
@@ -672,38 +442,47 @@ elif page == "Другие РК":
         for d in marks_green:
             fig.add_vline(x=d, line_width=1.6, line_dash="solid", line_color="rgba(46,204,113,0.95)")
 
-    fig.update_layout(height=560, margin=dict(l=20, r=20, t=40, b=40),
-                      xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
-                      yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
-                      hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.update_layout(
+        height=560, margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
+        yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     if show_lines == "С линиями":
         st.markdown(
             "<div style='color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.7rem;'>"
             "Вертикальные линии: <b style='color:#e5e7eb;'>белая</b> — совпадение тенденции у двух кампаний; "
-            "<b style='color:#22c55e;'>зелёная</b> — у трёх и более.</div>", unsafe_allow_html=True
+            "<b style='color:#22c55e;'>зелёная</b> — у трёх и более.</div>",
+            unsafe_allow_html=True,
         )
 
     st.markdown("### Линии тренда")
     def monthly_ctr(df_in: pd.DataFrame) -> pd.DataFrame:
-        if df_in.empty: return pd.DataFrame(columns=["Период","CTR"])
-        out = df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)].set_index("День").resample("MS").agg({"CTR":"mean"}).reset_index()
+        if df_in.empty: return pd.DataFrame(columns=["Период","CTR","label"])
+        out = (
+            df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)]
+            .set_index("День").resample("MS").agg({"CTR":"mean"}).reset_index()
+        )
         out.rename(columns={"День":"Период"}, inplace=True)
         out["label"] = out["Период"].dt.strftime("%b %Y")
         return out
 
     def weekly_ctr(df_in: pd.DataFrame) -> pd.DataFrame:
-        if df_in.empty: return pd.DataFrame(columns=["Период","CTR"])
-        out = df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)].set_index("День").resample("W-MON").agg({"CTR":"mean"}).reset_index()
+        if df_in.empty: return pd.DataFrame(columns=["Период","CTR","label"])
+        out = (
+            df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)]
+            .set_index("День").resample("W-MON").agg({"CTR":"mean"}).reset_index()
+        )
         out.rename(columns={"День":"Период"}, inplace=True)
         out["Период_конец"] = out["Период"] + pd.Timedelta(days=6)
         out["label"] = out["Период"].dt.strftime("%d.%m") + "–" + out["Период_конец"].dt.strftime("%d.%m.%Y")
         return out
 
     figm = go.Figure()
-    for s in series:
+    for s in valid_series:
         m = weekly_ctr(s["df"]) if trend_mode=="По неделям" else monthly_ctr(s["df"])
         if m.empty: continue
         stl = s["style"]
@@ -711,14 +490,17 @@ elif page == "Другие РК":
             x=m["Период"], y=m["CTR"], mode="lines+markers",
             name=f"{s['label']} ({'недели' if trend_mode=='По неделям' else 'месяцы'})",
             line=dict(color=stl.get("color"), width=max(2.4, stl.get("width",2.4)), dash=stl.get("dash","solid")),
-            marker=dict(size=5), text=m["label"], hovertemplate="%{text}<br>CTR (ср.): %{y:.2%}<extra></extra>"
+            marker=dict(size=5), text=m["label"],
+            hovertemplate="%{text}<br>CTR (ср.): %{y:.2%}<extra></extra>"
         ))
 
-    figm.update_layout(height=520, margin=dict(l=20, r=20, t=30, b=40),
-                       xaxis=dict(title="Неделя (пн)" if trend_mode=="По неделям" else "Месяц", showgrid=False),
-                       yaxis=dict(title="CTR (ср.)", showgrid=True, zeroline=False, tickformat=".2%"),
-                       hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    figm.update_layout(
+        height=520, margin=dict(l=20, r=20, t=30, b=40),
+        xaxis=dict(title="Неделя (пн)" if trend_mode=="По неделям" else "Месяц", showgrid=False),
+        yaxis=dict(title="CTR (ср.)", showgrid=True, zeroline=False, tickformat=".2%"),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(figm, use_container_width=True)
 
 # =====================================================
@@ -736,14 +518,19 @@ else:  # "Общий трафик"
         min_candidates.append(df_ctr["День"].min())
         max_candidates.append(df_ctr["День"].max())
     if len(min_candidates) == 0:
-        st.warning("Нет данных для отображения."); st.stop()
+        st.warning("Нет данных для отображения.")
+        st.stop()
 
     min_date = min(min_candidates); max_date = max(max_candidates)
     st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
     col_f = st.columns([1, 2.5, 1])[1]
     with col_f:
-        date_from, date_to = st.slider("Диапазон дат", min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
-                                       value=(min_date.to_pydatetime(), max_date.to_pydatetime()), format="DD.MM.YYYY")
+        date_from, date_to = st.slider(
+            "Диапазон дат",
+            min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+            format="DD.MM.YYYY"
+        )
 
     date_from = pd.to_datetime(date_from); date_to = pd.to_datetime(date_to)
 
@@ -751,35 +538,41 @@ else:  # "Общий трафик"
     with c1: show_N = st.checkbox("Показать «Н»", value=not df_N.empty)
     with c2: show_V = st.checkbox("Показать «В»", value=not df_V.empty)
     with c3: show_O = st.checkbox("Показать «О»", value=not df_O.empty)
-    with c4: show_CTR = st.checkbox("Показать CTR (основной)", value=True)
+    with c4: show_CTR = st.checkbox("Показать CTR (основной)", value=not df_ctr.empty)
 
     def clip(df, col_date="date"):
         if df.empty: return df
         return df[(df[col_date] >= date_from) & (df[col_date] <= date_to)].copy()
 
     dfN = clip(df_N, "date"); dfV = clip(df_V, "date"); dfO = clip(df_O, "date")
-    dfC = clip(df_ctr.rename(columns={"День": "date", "CTR": "ctr"}), "date")
+    dfC = clip(df_ctr.rename(columns={"День": "date", "CTR": "ctr"}), "date") if not df_ctr.empty else pd.DataFrame(columns=["date","ctr"])
 
     fig = go.Figure()
     if show_CTR and not dfC.empty and ("ctr" in dfC.columns):
-        fig.add_trace(go.Scatter(x=dfC["date"], y=dfC["ctr"], mode="lines+markers", name="CTR",
-                                 line=dict(color="rgba(255,80,80,1)", width=2.4), marker=dict(size=4),
-                                 hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y1"))
+        fig.add_trace(go.Scatter(
+            x=dfC["date"], y=dfC["ctr"], mode="lines+markers", name="CTR",
+            line=dict(color="rgba(255,80,80,1)", width=2.4), marker=dict(size=4),
+            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y1"
+        ))
 
     def add_traffic(df, label, color):
         if df.empty: return
-        fig.add_trace(go.Scatter(x=df["date"], y=df["value"], mode="lines+markers", name=label,
-                                 line=dict(color=color, width=2.0), marker=dict(size=3),
-                                 hovertemplate="%{x|%d.%m.%Y}<br>%{y:,}<extra></extra>", yaxis="y2"))
+        fig.add_trace(go.Scatter(
+            x=df["date"], y=df["value"], mode="lines+markers", name=label,
+            line=dict(color=color, width=2.0), marker=dict(size=3),
+            hovertemplate="%{x|%d.%m.%Y}<br>%{y:,}<extra></extra>", yaxis="y2"
+        ))
 
     if show_N: add_traffic(dfN, "Н", "rgba(102,178,255,1)")
     if show_V: add_traffic(dfV, "В", "rgba(46,204,113,1)")
     if show_O: add_traffic(dfO, "О", "rgba(255,206,86,1)")
 
-    fig.update_layout(height=560, margin=dict(l=20, r=20, t=40, b=40),
-                      xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
-                      yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
-                      yaxis2=dict(title="Трафик, шт.", overlaying="y", side="right", showgrid=False),
-                      hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.update_layout(
+        height=560, margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
+        yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
+        yaxis2=dict(title="Трафик, шт.", overlaying="y", side="right", showgrid=False),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(fig, use_container_width=True)
