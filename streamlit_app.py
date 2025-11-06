@@ -953,39 +953,61 @@ elif page == "Трафик в разделе":
     )
     st.plotly_chart(figx, use_container_width=True)
 
-    # ----- График 2: тренды по месяцам -----
-    st.markdown("### Тренды по месяцам")
-    monthly = (
+        # ----- График 2: тренды по неделям -----
+    st.markdown("### Тренды по неделям (ISO, понедельник–воскресенье)")
+
+    # средний CTR за неделю, сумма просмотров за неделю
+    weekly = (
         df_view.set_index("День")
-        .resample("MS")
+        .resample("W-MON")  # неделя начинается в понедельник
         .agg({"CTR": "mean", "Просмотры (раздел)": "sum"})
         .reset_index()
+        .rename(columns={"День": "Неделя_начало"})
     )
+    # подпись диапазона недель
+    weekly["Неделя_конец"] = weekly["Неделя_начало"] + pd.Timedelta(days=6)
+    weekly["Диапазон"] = weekly["Неделя_начало"].dt.strftime("%d.%m") + "–" + weekly["Неделя_конец"].dt.strftime("%d.%m.%Y")
 
-    figm = go.Figure()
-    figm.add_trace(
+    figw = go.Figure()
+    figw.add_trace(
         go.Scatter(
-            x=monthly["День"], y=monthly["CTR"], mode="lines+markers", name="CTR (ср. за месяц)",
-            line=dict(color="rgba(255,80,80,1)", width=2.6), marker=dict(size=5),
-            hovertemplate="%{x|%b %Y}<br>CTR (ср.): %{y:.2%}<extra></extra>", yaxis="y1",
+            x=weekly["Неделя_начало"],
+            y=weekly["CTR"],
+            mode="lines+markers",
+            name="CTR (ср. за неделю)",
+            line=dict(width=2.6),
+            marker=dict(size=5),
+            text=weekly["Диапазон"],
+            hovertemplate="Неделя: %{text}<br>CTR (ср.): %{y:.2%}<extra></extra>",
+            yaxis="y1",
         )
     )
-    figm.add_trace(
+    figw.add_trace(
         go.Scatter(
-            x=monthly["День"], y=monthly["Просмотры (раздел)"], mode="lines+markers", name="Просмотры (сумма за месяц)",
-            line=dict(color="rgba(80,140,255,1)", width=2.4), marker=dict(size=5),
-            hovertemplate="%{x|%b %Y}<br>Просмотры: %{y:,}<extra></extra>", yaxis="y2",
+            x=weekly["Неделя_начало"],
+            y=weekly["Просмотры (раздел)"],
+            mode="lines+markers",
+            name="Просмотры (сумма за неделю)",
+            line=dict(width=2.4),
+            marker=dict(size=5),
+            text=weekly["Диапазон"],
+            hovertemplate="Неделя: %{text}<br>Просмотры: %{y:,}<extra></extra>",
+            yaxis="y2",
         )
     )
-    figm.update_layout(
-        height=520, margin=dict(l=20, r=20, t=30, b=40),
-        xaxis=dict(title="Месяц", showgrid=False),
-        yaxis=dict(title="CTR (ср. за месяц)", showgrid=True, zeroline=False, tickformat=".2%"),
-        yaxis2=dict(title="Просмотры (сумма за месяц)", overlaying="y", side="right", showgrid=False),
-        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+    figw.update_layout(
+        height=520,
+        margin=dict(l=20, r=20, t=30, b=40),
+        xaxis=dict(title="Неделя (дата начала, пн)", showgrid=False),
+        yaxis=dict(title="CTR (ср. за неделю)", showgrid=True, zeroline=False, tickformat=".2%"),
+        yaxis2=dict(title="Просмотры (сумма за неделю)", overlaying="y", side="right", showgrid=False),
+        hovermode="x unified",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(figm, use_container_width=True)
+    st.plotly_chart(figw, use_container_width=True)
+
 
     # Таблица для удобного экспорта/просмотра
     df_peek = df_view.copy()
