@@ -1,4 +1,352 @@
-            f"<div style='font-size:1.6rem;font-weight:700;color:#f9fafb'>{m['value']:.1f}%</div>"
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import io
+
+# -----------------------------------------------------
+# НАСТРОЙКА
+# -----------------------------------------------------
+st.set_page_config(page_title="CTR // Данные", layout="wide")
+
+# -----------------------------------------------------
+# УТИЛИТЫ
+# -----------------------------------------------------
+def _resolve_secret(section: str, key: str):
+    """Возвращает значение секрета как строку (поддержка вложенного и плоского ключа)."""
+    # вложенный вид: st.secrets[section][key]
+    try:
+        sect = st.secrets[section]
+        try:
+            val = sect.get(key) if hasattr(sect, "get") else sect[key]
+        except Exception:
+            val = None
+        if val is not None:
+            return str(val)
+    except Exception:
+        pass
+    # плоский вид: st.secrets[f"{section}_{key}"]
+    flat_key = f"{section}_{key}"
+    try:
+        if hasattr(st.secrets, "get"):
+            val = st.secrets.get(flat_key)
+            if val is not None:
+                return str(val)
+        else:
+            if flat_key in st.secrets:
+                return str(st.secrets[flat_key])
+    except Exception:
+        pass
+    return None
+
+
+def _get_auth_password(default: str = "SportsTeam") -> str:
+    """Пароль читаем из [AUTH]/PASSWORD либо AUTH_PASSWORD; иначе — default."""
+    try:
+        s = st.secrets
+        try:
+            auth_sect = s["AUTH"]
+            val = auth_sect.get("PASSWORD") if hasattr(auth_sect, "get") else auth_sect["PASSWORD"]
+            if val:
+                return str(val)
+        except Exception:
+            pass
+        if hasattr(s, "get"):
+            val = s.get("AUTH_PASSWORD")
+            if val:
+                return str(val)
+        else:
+            if "AUTH_PASSWORD" in s:
+                return str(s["AUTH_PASSWORD"])
+    except Exception:
+        pass
+    return default
+
+
+def normalize_columns(df: pd.DataFrame, mapping_expect: dict = None) -> pd.DataFrame:
+    """
+    Нормализует названия колонок:
+    - срезает пробелы,
+    - убирает невидимые символы,
+    - приводит к нижнему регистру для сопоставления, затем возвращает «ожидаемые» имена из mapping_expect.
+    mapping_expect: {lower_name: "Ожидаемое Имя"}
+    """
+    if df.empty:
+        return df
+    clean = {}
+    for c in df.columns:
+        c2 = str(c).replace("\uFEFF", "").replace("\xa0", " ").strip()
+        clean[c] = c2
+    df = df.rename(columns=clean)
+    # сопоставление по нижнему регистру
+    if mapping_expect:
+        lower_map = {col: col.lower() for col in df.columns}
+        for want_lower, want_name in mapping_expect.items():
+            for col, low in lower_map.items():
+                if low == want_lower:
+                    df = df.rename(columns={col: want_name})
+                    break
+    return df
+
+
+def read_secret_csv(section: str, key: str, date_col: str = None, expected_cols: dict = None) -> pd.DataFrame:
+    """
+    Читает CSV из секретов и нормализует заголовки.
+    expected_cols: dict вида { "день".lower(): "День", "ctr": "CTR", ... } — какие имена ждать.
+    """
+    txt = _resolve_secret(section, key)
+    if not txt or not str(txt).strip():
+        return pd.DataFrame()
+    df = pd.read_csv(io.StringIO(str(txt)))
+    df = normalize_columns(df, mapping_expect=expected_cols)
+    if date_col and (date_col in df.columns):
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.sort_values(date_col).reset_index(drop=True)
+    return df
+
+
+def read_pct_series(section: str, key: str) -> pd.DataFrame:
+    """
+    Читает «ломаный» CSV (проценты «0,26 %» распилены на два столбца).
+    Возвращает df с колонками ["День","CTR"].
+    """
+    txt = _resolve_secret(section, key)
+    if not txt or not txt.strip():
+        return pd.DataFrame(columns=["День", "CTR"])
+
+    lines = [ln.strip() for ln in str(txt).strip().splitlines() if ln.strip()]
+    if not lines:
+        return pd.DataFrame(columns=["День", "CTR"])
+
+    rows = []
+    for ln in lines[1:]:
+        parts = ln.split(",", 2)  # максимум 3 части
+        if len(parts) == 1:
+            continue
+        if len(parts) == 2:
+            date_s, pct_s = parts[0].strip(), parts[1].strip()
+        else:
+            date_s, left, right = parts[0].strip(), parts[1].strip(), parts[2].strip()
+            pct_s = f"{left},{right}"
+        if not date_s:
+            continue
+        rows.append((date_s, pct_s))
+
+    if not rows:
+        return pd.DataFrame(columns=["День", "CTR"])
+
+    df = pd.DataFrame(rows, columns=["День", "pct"])
+    df["День"] = pd.to_datetime(df["День"], errors="coerce")
+    df = df.dropna(subset=["День"])
+
+    def pct_str_to_float(x: str):
+        if pd.isna(x) or not isinstance(x, str):
+            return None
+        x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
+        try:
+            return float(x) / 100.0
+        except Exception:
+            return None
+
+    df["CTR"] = df["pct"].apply(pct_str_to_float)
+    df = df.dropna(subset=["CTR"])[["День", "CTR"]].sort_values("День").reset_index(drop=True)
+    return df
+
+
+def pct_str_to_float(x: str):
+    if pd.isna(x) or not isinstance(x, str):
+        return None
+    x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
+    try:
+        return float(x) / 100.0
+    except Exception:
+        return None
+
+# -----------------------------------------------------
+# АВТОРИЗАЦИЯ
+# -----------------------------------------------------
+if "auth_ok" not in st.session_state:
+    st.session_state.auth_ok = False
+
+if not st.session_state.auth_ok:
+    st.markdown(
+        """
+        <div style="text-align:center;margin-top:4rem;">
+            <h2>Доступ</h2>
+            <p style="color:#9ca3af;">Введите пароль, чтобы продолжить</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    auth_pwd = _get_auth_password()
+    pwd = st.text_input("Пароль", type="password", label_visibility="collapsed")
+    if pwd == auth_pwd:
+        st.session_state.auth_ok = True
+        st.rerun()
+    st.stop()
+
+# -----------------------------------------------------
+# ЗАГРУЗКА ДАННЫХ
+# -----------------------------------------------------
+# ожидаемые имена для нормализации заголовков
+exp_ctr = {"день": "День", "просмотры": "Просмотры", "ctr": "CTR"}
+exp_section = {"период": "Период", "просмотры": "Просмотры"}
+exp_g = {"date": "date", "value": "value"}
+
+# CTR (основная серия)
+df_ctr = read_secret_csv("CTR", "DATA", date_col="День", expected_cols=exp_ctr)
+
+# Трафик "в разделе"
+df_section = read_secret_csv("SECTION_TRAFFIC", "CSV", date_col="Период", expected_cols=exp_section)
+
+# События
+df_events = read_secret_csv("EVENTS", "CSV", expected_cols={"начало": "начало", "окончание": "окончание", "название": "название", "вид спорта": "вид спорта"})
+if not df_events.empty:
+    df_events["начало"] = pd.to_datetime(df_events["начало"], errors="coerce")
+    df_events["окончание"] = pd.to_datetime(df_events["окончание"], errors="coerce")
+
+# Другие РК (ломаные проценты)
+df_F = read_pct_series("OTHER_CAMPAIGNS", "SERIES_F")
+df_TGF = read_pct_series("OTHER_CAMPAIGNS", "SERIES_TGF")
+
+# Общий трафик N / V / O
+df_N = read_secret_csv("GLOBAL_TRAFFIC", "N", date_col="date", expected_cols=exp_g)
+df_V = read_secret_csv("GLOBAL_TRAFFIC", "V", date_col="date", expected_cols=exp_g)
+df_O = read_secret_csv("GLOBAL_TRAFFIC", "O", date_col="date", expected_cols=exp_g)
+
+# -----------------------------------------------------
+# ПОДГОТОВКА
+# -----------------------------------------------------
+# df_ctr: приведение типов + защита, чтобы точно была колонка CTR
+if not df_ctr.empty:
+    # повторная нормализация на всякий случай + маппинг
+    df_ctr = normalize_columns(df_ctr, mapping_expect=exp_ctr)
+    # каст типов
+    if "CTR" in df_ctr:
+        df_ctr["CTR"] = pd.to_numeric(df_ctr["CTR"], errors="coerce")
+    if "Просмотры" in df_ctr:
+        df_ctr["Просмотры"] = pd.to_numeric(df_ctr["Просмотры"], errors="coerce")
+    if "День" in df_ctr:
+        df_ctr["День"] = pd.to_datetime(df_ctr["День"], errors="coerce")
+    df_ctr = df_ctr.sort_values("День").reset_index(drop=True)
+
+# df_section
+if not df_section.empty:
+    df_section = normalize_columns(df_section, mapping_expect=exp_section)
+    df_section["Период"] = pd.to_datetime(df_section["Период"], errors="coerce")
+    df_section["Просмотры"] = pd.to_numeric(df_section["Просмотры"], errors="coerce")
+    df_section = df_section.sort_values("Период").reset_index(drop=True)
+
+# Допсерии для блока «Другие РК»
+EXTRA_SERIES = [
+    {"name": "Ф", "df": df_F, "style": {"dash": "dot",  "width": 2.2, "color": "rgba(255,99,132,1)", "marker_size": 4}},
+    {"name": "ТГ-Ф", "df": df_TGF, "style": {"dash": "dash", "width": 2.2, "color": "rgba(46,204,113,1)", "marker_size": 4}},
+]
+
+# -----------------------------------------------------
+# СЕЛЕКТОР РАЗДЕЛОВ
+# -----------------------------------------------------
+with st.container():
+    st.markdown(
+        """
+        <style>.page-pill{display:inline-block;margin-right:0.5rem;margin-bottom:0.4rem;}</style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("<div style='margin-bottom:0.4rem;font-weight:500;'>Выбор раздела</div>", unsafe_allow_html=True)
+    page = st.radio(
+        "",
+        ("Итоги","Смена креативов","Спортивные события","Трафик в разделе","Просмотры","Другие РК","Общий трафик"),
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+# =====================================================
+# 1) ИТОГИ
+# =====================================================
+if page == "Итоги":
+    if df_ctr.empty or "CTR" not in df_ctr.columns:
+        st.warning("Нет валидных данных CTR для раздела «Итоги». Проверь секцию [CTR] в секретах.")
+        st.stop()
+
+    st.markdown("### Итоги")
+
+    stage_2_start = pd.to_datetime("2025-07-07")
+    stage_3_start = pd.to_datetime("2025-08-14")
+    stage_4_start = pd.to_datetime("2025-10-22")
+    stage_switches = [stage_2_start, stage_3_start, stage_4_start]
+
+    df_all = df_ctr.dropna(subset=["CTR"]).copy().sort_values("День").reset_index(drop=True)
+    global_views_mean = df_all["Просмотры"].mean()
+
+    def exact_events_for_day(d: pd.Timestamp) -> str:
+        if df_events.empty: return ""
+        names = []
+        for _, ev in df_events.iterrows():
+            if ev["начало"].date() == d.date() or ev["окончание"].date() == d.date():
+                names.append(ev["название"])
+        return ", ".join(names)
+
+    def stage_for_day(d: pd.Timestamp) -> int:
+        if d < stage_2_start: return 1
+        elif d < stage_3_start: return 2
+        elif d < stage_4_start: return 3
+        else: return 4
+
+    def is_stage_switch_near(d: pd.Timestamp) -> str:
+        for sw in stage_switches:
+            if sw < d <= sw + pd.Timedelta(days=7):
+                return "да"
+        return "нет"
+
+    df_all["Точные события"] = df_all["День"].apply(exact_events_for_day)
+    df_all["Этап"] = df_all["День"].apply(stage_for_day)
+    df_all["Смена креативов"] = df_all["День"].apply(is_stage_switch_near)
+    df_all["Дата"] = df_all["День"].dt.strftime("%d.%m.%Y")
+    df_all["CTR (в %)"] = df_all["CTR"].map(lambda x: f"{x:.2%}")
+    df_all["Просмотры выше среднего"] = df_all["Просмотры"].apply(lambda v: "да" if v >= global_views_mean else "нет")
+
+    min_day, max_day = df_all["День"].min(), df_all["День"].max()
+    local_views_means, local_ctr_means, ctr_local_flags, views_local_flags = [], [], [], []
+
+    for _, row in df_all.iterrows():
+        cur_day = row["День"]
+        date_min = max(min_day, cur_day - pd.Timedelta(days=7))
+        date_max = min(max_day, cur_day + pd.Timedelta(days=7))
+        window = df_all[(df_all["День"] >= date_min) & (df_all["День"] <= date_max)]
+        lv_mean = window["Просмотры"].mean(); local_views_means.append(lv_mean)
+        views_local_flags.append("да" if row["Просмотры"] >= lv_mean else "нет")
+        lc_mean = window["CTR"].mean(); local_ctr_means.append(lc_mean)
+        ctr_local_flags.append("да" if row["CTR"] >= lc_mean else "нет")
+
+    df_all["Локальное среднее просмотров"] = local_views_means
+    df_all["Просмотры выше локального"] = views_local_flags
+    df_all["Локальный CTR"] = local_ctr_means
+    df_all["CTR выше локального"] = ctr_local_flags
+    df_all["Локальный CTR (в %)"] = df_all["Локальный CTR"].map(lambda x: f"{x:.2%}")
+
+    df_table_ctr = df_all[df_all["CTR выше локального"] == "да"].copy().sort_values("CTR", ascending=False)
+    total_peaks = len(df_table_ctr)
+    events_count = (df_table_ctr["Точные события"] != "").sum()
+    views_high_global = (df_table_ctr["Просмотры выше среднего"] == "да").sum()
+    views_high_local = (df_table_ctr["Просмотры выше локального"] == "да").sum()
+    stage_switch_count = (df_table_ctr["Смена креативов"] == "да").sum()
+
+    def to_pct(count): return 0.0 if total_peaks == 0 else (count / total_peaks) * 100.0
+
+    metrics = [
+        {"title": "Просмотры выше локального (±7 дн)", "value": to_pct(views_high_local)},
+        {"title": "Просмотры выше среднего (глобально)", "value": to_pct(views_high_global)},
+        {"title": "Смена креативов (+7 дн)", "value": to_pct(stage_switch_count)},
+        {"title": "События", "value": to_pct(events_count)},
+    ]
+    metrics = sorted(metrics, key=lambda x: x["value"], reverse=True)
+
+    cards = []
+    for m in metrics:
+        cards.append(
+            f"<div style='background:#111827;border:1px solid #1f2937;border-radius:0.75rem;padding:0.75rem 1rem;min-width:190px;'>"
+            f"<div style='font-size:0.7rem;color:#cbd5e1;'>{m['title']}</div>"
+                       f"<div style='font-size:1.6rem;font-weight:700;color:#f9fafb'>{m['value']:.1f}%</div>"
             f"</div>"
         )
     cards_html = (
@@ -576,3 +924,5 @@ else:  # "Общий трафик"
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     st.plotly_chart(fig, use_container_width=True)
+
+
