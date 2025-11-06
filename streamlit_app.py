@@ -489,6 +489,19 @@ SERIES_F_RAW = [
     ("2025-10-04","0,25 %"),("2025-10-05","0,27 %"),("2025-10-06","0,17 %"),
 ]
 
+def _pct_str_to_float(x: str) -> float:
+    # "0,23 %" -> 0.0023
+    x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
+    try:
+        return float(x) / 100.0
+    except Exception:
+        return None
+
+df_F = pd.DataFrame(SERIES_F_RAW, columns=["День", "CTR"])
+df_F["День"] = pd.to_datetime(df_F["День"])
+df_F["CTR"] = df_F["CTR"].apply(_pct_str_to_float)
+df_F = df_F.dropna().sort_values("День").reset_index(drop=True)
+
 # --- Новая серия «ТГ-Ф» (проценты -> доли) ---
 SERIES_TG_F_RAW = [
     ("2025-08-18","0,26 %"),
@@ -537,27 +550,12 @@ SERIES_TG_F_RAW = [
     ("2025-09-30","0,30 %"),
     ("2025-10-01","0,25 %"),
 ]
-
 df_TG_F = pd.DataFrame(SERIES_TG_F_RAW, columns=["День", "CTR"])
 df_TG_F["День"] = pd.to_datetime(df_TG_F["День"])
 df_TG_F["CTR"] = df_TG_F["CTR"].apply(_pct_str_to_float)
 df_TG_F = df_TG_F.dropna().sort_values("День").reset_index(drop=True)
 
-
-def _pct_str_to_float(x: str) -> float:
-    # "0,23 %" -> 0.0023
-    x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
-    try:
-        return float(x) / 100.0
-    except Exception:
-        return None
-
-df_F = pd.DataFrame(SERIES_F_RAW, columns=["День", "CTR"])
-df_F["День"] = pd.to_datetime(df_F["День"])
-df_F["CTR"] = df_F["CTR"].apply(_pct_str_to_float)
-df_F = df_F.dropna().sort_values("День").reset_index(drop=True)
-
-# Возможность добавить до 3 дополнительных серий (пока одна — «Ф»)
+# Возможность добавить до 3 дополнительных серий (теперь две — «Ф» и «ТГ-Ф»)
 EXTRA_SERIES = [
     {
         "name": "Ф",
@@ -599,7 +597,7 @@ with st.container():
             "Спортивные события",
             "Трафик в разделе",
             "Просмотры",
-            "Другие РК",  # <-- новый раздел
+            "Другие РК",  # <-- раздел с доп. сериями
         ),
         horizontal=True,
         label_visibility="collapsed",
@@ -1196,5 +1194,3 @@ else:  # "Другие РК"
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(figm, use_container_width=True)
-
-
