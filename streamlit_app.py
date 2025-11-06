@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import io
 
 # -----------------------------------------------------
-# НАСТРОЙКА
+# НАСТРОЙКА 
 # -----------------------------------------------------
 st.set_page_config(page_title="CTR // Данные", layout="wide")
 
@@ -1120,18 +1120,35 @@ elif page == "Просмотры":
 # =====================================================
 # 6) ДРУГИЕ РК — сравнение CTR
 # =====================================================
+
 else:  # "Другие РК"
     st.markdown("### Другие РК: сравнение CTR")
 
     # Базовая серия — текущие данные
-    base = df_ctr[["День", "CTR"]].dropna().copy()
+    base = df_ctr[["День", "CTR"]].dropna().copy().sort_values("День")
 
-    # Построим общие границы дат с учётом доп.серий
-    min_dates = [base["День"].min()] + [s["df"]["День"].min() for s in EXTRA_SERIES if not s["df"].empty]
-    max_dates = [base["День"].max()] + [s["df"]["День"].max() for s in EXTRA_SERIES if not s["df"].empty]
-    min_date = min(min_dates)
-    max_date = max(max_dates)
+    # Список всех серий: базовая + дополнительные
+    # имя -> {df, style, label}
+    series = []
+    series.append({
+        "key": "BASE",
+        "label": "Основная серия",
+        "df": base.copy(),
+        "style": {"dash": "solid", "width": 2.4, "color": "rgba(52,152,219,1)", "marker_size": 4},
+    })
+    for s in EXTRA_SERIES:
+        series.append({
+            "key": f"EXTRA_{s['name']}",
+            "label": f"Серия «{s['name']}»",
+            "df": s["df"].copy().dropna().sort_values("День"),
+            "style": s.get("style", {"dash": "dot", "width": 2.2, "color": "rgba(255,99,132,1)", "marker_size": 4}),
+        })
 
+    # Общие границы дат
+    min_date = min([s["df"]["День"].min() for s in series if not s["df"].empty])
+    max_date = max([s["df"]["День"].max() for s in series if not s["df"].empty])
+
+    # ---- Фильтры даты
     st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
     col_l, col_c, col_r = st.columns([1, 2.5, 1])
     with col_c:
@@ -1143,40 +1160,70 @@ else:  # "Другие РК"
             format="DD.MM.YYYY",
         )
 
-    date_from = pd.to_datetime(date_from)
-    date_to = pd.to_datetime(date_to)
+    date_from = pd.to_datetime(date_from); date_to = pd.to_datetime(date_to)
 
-    # Фильтруем по диапазону
-    base_view = base[(base["День"] >= date_from) & (base["День"] <= date_to)].copy()
-
-    # ---- График 1: дневные значения
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=base_view["День"], y=base_view["CTR"], mode="lines+markers", name="Основная серия",
-            line=dict(color="rgba(52,152,219,1)", width=2.4), marker=dict(size=4),
-            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>",
-        )
-    )
-
-    for s in EXTRA_SERIES:
-        df_s = s["df"]
-        if df_s.empty:
-            continue
-        df_s_view = df_s[(df_s["День"] >= date_from) & (df_s["День"] <= date_to)].copy()
-        style = s.get("style", {})
+    # ===================== ГРАФИК 1: по дням с совпадениями тенденций =====================
+    def add_trace(fig, df_src, label, style):
+        if df_src.empty:
+            return
         fig.add_trace(
             go.Scatter(
-                x=df_s_view["День"], y=df_s_view["CTR"], mode="lines+markers", name=f"Серия «{s['name']}»",
-                line=dict(
-                    color=style.get("color", "rgba(255,99,132,1)"),
-                    width=style.get("width", 2.2),
-                    dash=style.get("dash", "dot"),
-                ),
+                x=df_src["День"], y=df_src["CTR"], mode="lines+markers", name=label,
+                line=dict(color=style.get("color"), width=style.get("width"), dash=style.get("dash")),
                 marker=dict(size=style.get("marker_size", 4)),
                 hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>",
             )
         )
+
+    # Подготовим view и направления (тенденции) по дням
+    # sign = 1 (рост), -1 (падение), 0 (без изменения / нет данных)
+    def with_sign(df_in: pd.DataFrame) -> pd.DataFrame:
+        d = df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)].copy().sort_values("День")
+        d["prev"] = d["CTR"].shift(1)
+        d["chg"] = d["CTR"] - d["prev"]
+        d["sign"] = d["chg"].apply(lambda v: 1 if pd.notna(v) and v > 0 else (-1 if pd.notna(v) and v < 0 else 0))
+        return d[["День", "CTR", "sign"]]
+
+    series_view = []
+    for s in series:
+        series_view.append({**s, "dfv": with_sign(s["df"])})
+
+    # Собираем таблицу знаков по датам
+    all_dates = pd.DataFrame({"День": pd.date_range(date_from, date_to, freq="D")})
+    signs_df = all_dates.copy()
+    for s in series_view:
+        col = f"sign_{s['key']}"
+        signs_df = signs_df.merge(s["dfv"][["День", "sign"]].rename(columns={"sign": col}), on="День", how="left")
+
+    # Для каждой даты считаем "консенсус": сколько серий идут вверх и вниз
+    # Логика линий:
+    #  - если max(вверх, вниз) >= 3 → ЗЕЛЁНАЯ вертикаль (совпало >=3 кампаний)
+    #  - elif max(вверх, вниз) == 2 → БЕЛАЯ вертикаль (совпало ровно 2 кампании)
+    marks_white = []  # ровно 2
+    marks_green = []  # 3 и более
+    for _, row in signs_df.iterrows():
+        vals = [v for k, v in row.items() if str(k).startswith("sign_")]
+        vals = [int(v) for v in vals if pd.notna(v) and v != 0]
+        if len(vals) < 2:
+            continue
+        up = sum(1 for v in vals if v == 1)
+        dn = sum(1 for v in vals if v == -1)
+        consensus = max(up, dn)
+        if consensus >= 3:
+            marks_green.append(row["День"])
+        elif consensus == 2:
+            marks_white.append(row["День"])
+
+    # Строим дневной график
+    fig = go.Figure()
+    for s in series_view:
+        add_trace(fig, s["dfv"][["День", "CTR"]].rename(columns={"CTR": "CTR"}), s["label"], s["style"])
+
+    # Вертикальные линии совпадений
+    for d in marks_white:
+        fig.add_vline(x=d, line_width=1.2, line_dash="dot", line_color="rgba(255,255,255,0.95)")
+    for d in marks_green:
+        fig.add_vline(x=d, line_width=1.6, line_dash="solid", line_color="rgba(46,204,113,0.95)")
 
     fig.update_layout(
         height=560, margin=dict(l=20, r=20, t=40, b=40),
@@ -1187,53 +1234,84 @@ else:  # "Другие РК"
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---- График 2: тренды по месяцам (среднее CTR за месяц)
-    st.markdown("### Линии тренда по месяцам")
+    # Пояснение к линиям
+    st.markdown(
+        "<div style='color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.7rem;'>"
+        "Вертикальные линии: <b style='color:#e5e7eb;'>белая</b> — совпадение тенденции ровно у двух кампаний; "
+        "<b style='color:#22c55e;'>зелёная</b> — совпадение у трёх и более.</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ===================== ГРАФИК 2: ЛИНИИ ТРЕНДА (переключатель) =====================
+    st.markdown("### Линии тренда (агрегация: недели / месяцы)")
+    mode = st.radio(
+        "Агрегация тренда",
+        options=["По неделям", "По месяцам"],
+        index=0,
+        horizontal=True,
+        help="Средний CTR за период по каждой серии",
+    )
 
     def monthly_ctr(df_in: pd.DataFrame) -> pd.DataFrame:
         if df_in.empty:
-            return pd.DataFrame(columns=["Месяц", "CTR"])
+            return pd.DataFrame(columns=["Период", "CTR"])
         out = (
-            df_in.set_index("День")
+            df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)]
+            .set_index("День")
             .resample("MS")
             .agg({"CTR": "mean"})
             .reset_index()
-            .rename(columns={"День": "Месяц"})
+            .rename(columns={"День": "Период"})
         )
+        out["label"] = out["Период"].dt.strftime("%b %Y")
         return out
 
-    base_m = monthly_ctr(base[(base["День"] >= date_from) & (base["День"] <= date_to)])
-    figm = go.Figure()
-    figm.add_trace(
-        go.Scatter(
-            x=base_m["Месяц"], y=base_m["CTR"], mode="lines+markers", name="Основная серия (ср. за месяц)",
-            line=dict(color="rgba(52,152,219,1)", width=2.8), marker=dict(size=5),
-            hovertemplate="%{x|%b %Y}<br>CTR (ср.): %{y:.2%}<extra></extra>",
+    def weekly_ctr(df_in: pd.DataFrame) -> pd.DataFrame:
+        if df_in.empty:
+            return pd.DataFrame(columns=["Период", "CTR"])
+        out = (
+            df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)]
+            .set_index("День")
+            .resample("W-MON")
+            .agg({"CTR": "mean"})
+            .reset_index()
+            .rename(columns={"День": "Период"})
         )
-    )
+        out["Период_конец"] = out["Период"] + pd.Timedelta(days=6)
+        out["label"] = out["Период"].dt.strftime("%d.%m") + "–" + out["Период_конец"].dt.strftime("%d.%m.%Y")
+        return out
 
-    for s in EXTRA_SERIES:
-        df_s = s["df"]
-        df_s_m = monthly_ctr(df_s[(df_s["День"] >= date_from) & (df_s["День"] <= date_to)])
-        style = s.get("style", {})
+    figm = go.Figure()
+    for s in series:
+        if mode == "По неделям":
+            m = weekly_ctr(s["df"])
+            title_y = "CTR (ср. за неделю)"
+            x_title = "Неделя (начало, пн)"
+        else:
+            m = monthly_ctr(s["df"])
+            title_y = "CTR (ср. за месяц)"
+            x_title = "Месяц"
+
+        if m.empty:
+            continue
+        stl = s["style"]
         figm.add_trace(
             go.Scatter(
-                x=df_s_m["Месяц"], y=df_s_m["CTR"], mode="lines+markers", name=f"Серия «{s['name']}» (ср. за месяц)",
-                line=dict(
-                    color=style.get("color", "rgba(255,99,132,1)"),
-                    width=2.6,
-                    dash=style.get("dash", "dot"),
-                ),
+                x=m["Период"], y=m["CTR"], mode="lines+markers",
+                name=f"{s['label']} ({'недели' if mode=='По неделям' else 'месяцы'})",
+                line=dict(color=stl.get("color"), width=max(2.4, stl.get("width", 2.4)), dash=stl.get("dash", "solid")),
                 marker=dict(size=5),
-                hovertemplate="%{x|%b %Y}<br>CTR (ср.): %{y:.2%}<extra></extra>",
+                text=m["label"],
+                hovertemplate=("%{text}<br>CTR (ср.): %{y:.2%}<extra></extra>"),
             )
         )
 
     figm.update_layout(
         height=520, margin=dict(l=20, r=20, t=30, b=40),
-        xaxis=dict(title="Месяц", showgrid=False),
-        yaxis=dict(title="CTR (ср. за месяц)", showgrid=True, zeroline=False, tickformat=".2%"),
-        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        xaxis=dict(title=x_title, showgrid=False),
+        yaxis=dict(title=title_y, showgrid=True, zeroline=False, tickformat=".2%"),
+        hovermode="x unified",
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(figm, use_container_width=True)
