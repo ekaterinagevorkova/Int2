@@ -1120,15 +1120,13 @@ elif page == "Просмотры":
 # =====================================================
 # 6) ДРУГИЕ РК — сравнение CTR
 # =====================================================
-
 else:  # "Другие РК"
     st.markdown("### Другие РК: сравнение CTR")
 
-    # Базовая серия — текущие данные
+    # --- Базовая серия
     base = df_ctr[["День", "CTR"]].dropna().copy().sort_values("День")
 
-    # Список всех серий: базовая + дополнительные
-    # имя -> {df, style, label}
+    # --- Список серий
     series = []
     series.append({
         "key": "BASE",
@@ -1144,11 +1142,11 @@ else:  # "Другие РК"
             "style": s.get("style", {"dash": "dot", "width": 2.2, "color": "rgba(255,99,132,1)", "marker_size": 4}),
         })
 
-    # Общие границы дат
+    # --- Границы дат
     min_date = min([s["df"]["День"].min() for s in series if not s["df"].empty])
     max_date = max([s["df"]["День"].max() for s in series if not s["df"].empty])
 
-    # ---- Фильтры даты
+    # --- Фильтры
     st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
     col_l, col_c, col_r = st.columns([1, 2.5, 1])
     with col_c:
@@ -1162,7 +1160,26 @@ else:  # "Другие РК"
 
     date_from = pd.to_datetime(date_from); date_to = pd.to_datetime(date_to)
 
-    # ===================== ГРАФИК 1: по дням с совпадениями тенденций =====================
+    # --- Настройки отображения
+    opt_col1, opt_col2 = st.columns([1, 1.5])
+    with opt_col1:
+        show_lines = st.radio(
+            "Отображение линий совпадений:",
+            ["С линиями", "Без линий"],
+            horizontal=True,
+            index=0,
+        )
+    with opt_col2:
+        trend_mode = st.radio(
+            "Тренды:",
+            ["По неделям", "По месяцам"],
+            horizontal=True,
+            index=0,
+        )
+
+    # =====================================================
+    # ГРАФИК 1 — ДНЕВНОЙ CTR С ВЕРТИКАЛЬНЫМИ ЛИНИЯМИ
+    # =====================================================
     def add_trace(fig, df_src, label, style):
         if df_src.empty:
             return
@@ -1175,8 +1192,7 @@ else:  # "Другие РК"
             )
         )
 
-    # Подготовим view и направления (тенденции) по дням
-    # sign = 1 (рост), -1 (падение), 0 (без изменения / нет данных)
+    # --- Определение тенденций
     def with_sign(df_in: pd.DataFrame) -> pd.DataFrame:
         d = df_in[(df_in["День"] >= date_from) & (df_in["День"] <= date_to)].copy().sort_values("День")
         d["prev"] = d["CTR"].shift(1)
@@ -1188,19 +1204,14 @@ else:  # "Другие РК"
     for s in series:
         series_view.append({**s, "dfv": with_sign(s["df"])})
 
-    # Собираем таблицу знаков по датам
+    # --- Подготовка данных для совпадений
     all_dates = pd.DataFrame({"День": pd.date_range(date_from, date_to, freq="D")})
     signs_df = all_dates.copy()
     for s in series_view:
         col = f"sign_{s['key']}"
         signs_df = signs_df.merge(s["dfv"][["День", "sign"]].rename(columns={"sign": col}), on="День", how="left")
 
-    # Для каждой даты считаем "консенсус": сколько серий идут вверх и вниз
-    # Логика линий:
-    #  - если max(вверх, вниз) >= 3 → ЗЕЛЁНАЯ вертикаль (совпало >=3 кампаний)
-    #  - elif max(вверх, вниз) == 2 → БЕЛАЯ вертикаль (совпало ровно 2 кампании)
-    marks_white = []  # ровно 2
-    marks_green = []  # 3 и более
+    marks_white, marks_green = [], []
     for _, row in signs_df.iterrows():
         vals = [v for k, v in row.items() if str(k).startswith("sign_")]
         vals = [int(v) for v in vals if pd.notna(v) and v != 0]
@@ -1214,43 +1225,41 @@ else:  # "Другие РК"
         elif consensus == 2:
             marks_white.append(row["День"])
 
-    # Строим дневной график
+    # --- Построение графика
     fig = go.Figure()
     for s in series_view:
-        add_trace(fig, s["dfv"][["День", "CTR"]].rename(columns={"CTR": "CTR"}), s["label"], s["style"])
+        add_trace(fig, s["dfv"], s["label"], s["style"])
 
-    # Вертикальные линии совпадений
-    for d in marks_white:
-        fig.add_vline(x=d, line_width=1.2, line_dash="dot", line_color="rgba(255,255,255,0.95)")
-    for d in marks_green:
-        fig.add_vline(x=d, line_width=1.6, line_dash="solid", line_color="rgba(46,204,113,0.95)")
+    if show_lines == "С линиями":
+        for d in marks_white:
+            fig.add_vline(x=d, line_width=1.2, line_dash="dot", line_color="rgba(255,255,255,0.95)")
+        for d in marks_green:
+            fig.add_vline(x=d, line_width=1.6, line_dash="solid", line_color="rgba(46,204,113,0.95)")
 
     fig.update_layout(
-        height=560, margin=dict(l=20, r=20, t=40, b=40),
+        height=560,
+        margin=dict(l=20, r=20, t=40, b=40),
         xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
         yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
-        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        hovermode="x unified",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Пояснение к линиям
-    st.markdown(
-        "<div style='color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.7rem;'>"
-        "Вертикальные линии: <b style='color:#e5e7eb;'>белая</b> — совпадение тенденции ровно у двух кампаний; "
-        "<b style='color:#22c55e;'>зелёная</b> — совпадение у трёх и более.</div>",
-        unsafe_allow_html=True,
-    )
+    if show_lines == "С линиями":
+        st.markdown(
+            "<div style='color:#94a3b8;margin-top:-0.5rem;margin-bottom:0.7rem;'>"
+            "Вертикальные линии: <b style='color:#e5e7eb;'>белая</b> — совпадение тенденции у двух кампаний; "
+            "<b style='color:#22c55e;'>зелёная</b> — у трёх и более.</div>",
+            unsafe_allow_html=True,
+        )
 
-    # ===================== ГРАФИК 2: ЛИНИИ ТРЕНДА (переключатель) =====================
-    st.markdown("### Линии тренда (агрегация: недели / месяцы)")
-    mode = st.radio(
-        "Агрегация тренда",
-        options=["По неделям", "По месяцам"],
-        index=0,
-        horizontal=True,
-        help="Средний CTR за период по каждой серии",
-    )
+    # =====================================================
+    # ГРАФИК 2 — ЛИНИИ ТРЕНДА (НЕДЕЛИ / МЕСЯЦЫ)
+    # =====================================================
+    st.markdown("### Линии тренда")
 
     def monthly_ctr(df_in: pd.DataFrame) -> pd.DataFrame:
         if df_in.empty:
@@ -1283,14 +1292,9 @@ else:  # "Другие РК"
 
     figm = go.Figure()
     for s in series:
-        if mode == "По неделям":
-            m = weekly_ctr(s["df"])
-            title_y = "CTR (ср. за неделю)"
-            x_title = "Неделя (начало, пн)"
-        else:
-            m = monthly_ctr(s["df"])
-            title_y = "CTR (ср. за месяц)"
-            x_title = "Месяц"
+        m = weekly_ctr(s["df"]) if trend_mode == "По неделям" else monthly_ctr(s["df"])
+        title_y = "CTR (ср. за неделю)" if trend_mode == "По неделям" else "CTR (ср. за месяц)"
+        x_title = "Неделя (начало, пн)" if trend_mode == "По неделям" else "Месяц"
 
         if m.empty:
             continue
@@ -1298,20 +1302,23 @@ else:  # "Другие РК"
         figm.add_trace(
             go.Scatter(
                 x=m["Период"], y=m["CTR"], mode="lines+markers",
-                name=f"{s['label']} ({'недели' if mode=='По неделям' else 'месяцы'})",
+                name=f"{s['label']} ({trend_mode.lower()})",
                 line=dict(color=stl.get("color"), width=max(2.4, stl.get("width", 2.4)), dash=stl.get("dash", "solid")),
                 marker=dict(size=5),
                 text=m["label"],
-                hovertemplate=("%{text}<br>CTR (ср.): %{y:.2%}<extra></extra>"),
+                hovertemplate="%{text}<br>CTR (ср.): %{y:.2%}<extra></extra>",
             )
         )
 
     figm.update_layout(
-        height=520, margin=dict(l=20, r=20, t=30, b=40),
+        height=520,
+        margin=dict(l=20, r=20, t=30, b=40),
         xaxis=dict(title=x_title, showgrid=False),
         yaxis=dict(title=title_y, showgrid=True, zeroline=False, tickformat=".2%"),
         hovermode="x unified",
-        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(figm, use_container_width=True)
+
