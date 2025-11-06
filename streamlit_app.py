@@ -462,6 +462,58 @@ df_events["начало"] = pd.to_datetime(df_events["начало"])
 df_events["окончание"] = pd.to_datetime(df_events["окончание"])
 
 # -----------------------------------------------------
+# ДАННЫЕ «ДРУГИЕ РК» — СЕРИЯ «Ф»
+# (проценты приведены к долям: 0,23% -> 0.0023)
+# -----------------------------------------------------
+SERIES_F_RAW = [
+    ("2025-07-15","0,23 %"),("2025-07-16","0,21 %"),("2025-07-17","0,21 %"),("2025-07-18","0,26 %"),
+    ("2025-07-19","0,31 %"),("2025-07-20","0,32 %"),("2025-07-21","0,21 %"),("2025-07-22","0,18 %"),
+    ("2025-07-24","0,23 %"),("2025-07-25","0,27 %"),("2025-07-26","0,30 %"),("2025-07-27","0,27 %"),
+    ("2025-07-28","0,22 %"),("2025-07-29","0,24 %"),("2025-07-30","0,23 %"),("2025-07-31","0,20 %"),
+    ("2025-08-01","0,21 %"),("2025-08-02","0,27 %"),("2025-08-03","0,24 %"),("2025-08-04","0,18 %"),
+    ("2025-08-05","0,20 %"),("2025-08-06","0,18 %"),("2025-08-07","0,18 %"),("2025-08-08","0,18 %"),
+    ("2025-08-09","0,25 %"),("2025-08-10","0,25 %"),("2025-08-11","17,58 %"),("2025-08-12","0,22 %"),
+    ("2025-08-13","0,21 %"),("2025-08-14","0,21 %"),("2025-08-15","0,19 %"),("2025-08-16","0,24 %"),
+    ("2025-08-17","0,24 %"),("2025-08-18","0,17 %"),("2025-08-19","0,19 %"),("2025-08-20","0,19 %"),
+    ("2025-08-21","0,15 %"),("2025-08-22","0,14 %"),("2025-08-23","0,20 %"),("2025-08-24","0,20 %"),
+    ("2025-08-25","0,15 %"),("2025-08-26","0,18 %"),("2025-08-27","0,22 %"),("2025-08-28","0,29 %"),
+    ("2025-08-29","0,25 %"),("2025-08-30","0,29 %"),("2025-08-31","0,29 %"),("2025-09-01","0,21 %"),
+    ("2025-09-02","0,24 %"),("2025-09-03","0,21 %"),("2025-09-04","0,24 %"),("2025-09-05","0,25 %"),
+    ("2025-09-06","0,29 %"),("2025-09-07","0,26 %"),("2025-09-08","0,23 %"),("2025-09-09","0,22 %"),
+    ("2025-09-10","0,19 %"),("2025-09-11","0,18 %"),("2025-09-12","0,15 %"),("2025-09-13","0,11 %"),
+    ("2025-09-14","0,12 %"),("2025-09-15","0,10 %"),("2025-09-16","0,11 %"),("2025-09-17","0,14 %"),
+    ("2025-09-18","0,10 %"),("2025-09-19","0,11 %"),("2025-09-20","0,14 %"),("2025-09-21","0,16 %"),
+    ("2025-09-22","0,16 %"),("2025-09-23","0,00 %"),("2025-09-24","0,24 %"),("2025-09-25","0,19 %"),
+    ("2025-09-26","0,27 %"),("2025-09-27","0,39 %"),("2025-09-28","0,38 %"),("2025-09-29","0,25 %"),
+    ("2025-09-30","0,59 %"),("2025-10-01","0,26 %"),("2025-10-02","0,18 %"),("2025-10-03","0,17 %"),
+    ("2025-10-04","0,25 %"),("2025-10-05","0,27 %"),("2025-10-06","0,17 %"),
+]
+
+def _pct_str_to_float(x: str) -> float:
+    # "0,23 %" -> 0.0023
+    x = x.replace("%", "").replace("\xa0", "").replace(" ", "").replace(",", ".")
+    try:
+        return float(x) / 100.0
+    except Exception:
+        return None
+
+df_F = pd.DataFrame(SERIES_F_RAW, columns=["День", "CTR"])
+df_F["День"] = pd.to_datetime(df_F["День"])
+df_F["CTR"] = df_F["CTR"].apply(_pct_str_to_float)
+df_F = df_F.dropna().sort_values("День").reset_index(drop=True)
+
+# Возможность добавить до 3 дополнительных серий (пока одна — «Ф»)
+EXTRA_SERIES = [
+    {
+        "name": "Ф",
+        "df": df_F,
+        "style": {"dash": "dot", "width": 2.2, "color": "rgba(255,99,132,1)", "marker_size": 4},
+    },
+    # Пример добавления ещё одной серии:
+    # {"name": "G", "df": df_G, "style": {...}},
+]
+
+# -----------------------------------------------------
 # ВИЗУАЛЬНЫЙ СЕЛЕКТОР СТРАНИЦ
 # -----------------------------------------------------
 with st.container():
@@ -487,8 +539,9 @@ with st.container():
             "Итоги",
             "Смена креативов",
             "Спортивные события",
-            "Трафик в разделе",   # новый пункт
+            "Трафик в разделе",
             "Просмотры",
+            "Другие РК",  # <-- новый раздел
         ),
         horizontal=True,
         label_visibility="collapsed",
@@ -887,7 +940,7 @@ elif page == "Трафик в разделе":
 # =====================================================
 # 5) ПРОСМОТРЫ (основные)
 # =====================================================
-else:  # "Просмотры"
+elif page == "Просмотры":
     st.markdown("### CTR vs Просмотры (по дням)")
 
     min_date = pd.to_datetime("2025-04-23")
@@ -964,5 +1017,126 @@ else:  # "Просмотры"
         peaks3[["Дата", "CTR (в %)", "Просмотры", "Уровень просмотров"]],
         use_container_width=True, hide_index=True,
     )
+
+# =====================================================
+# 6) ДРУГИЕ РК — сравнение CTR
+# =====================================================
+else:  # "Другие РК"
+    st.markdown("### Другие РК: сравнение CTR")
+
+    # Базовая серия — текущие данные
+    base = df_ctr[["День", "CTR"]].dropna().copy()
+
+    # Построим общие границы дат с учётом доп.серий
+    min_dates = [base["День"].min()] + [s["df"]["День"].min() for s in EXTRA_SERIES if not s["df"].empty]
+    max_dates = [base["День"].max()] + [s["df"]["День"].max() for s in EXTRA_SERIES if not s["df"].empty]
+    min_date = min(min_dates)
+    max_date = max(max_dates)
+
+    st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
+    col_l, col_c, col_r = st.columns([1, 2.5, 1])
+    with col_c:
+        date_from, date_to = st.slider(
+            "Диапазон дат",
+            min_value=min_date.to_pydatetime(),
+            max_value=max_date.to_pydatetime(),
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+            format="DD.MM.YYYY",
+        )
+
+    date_from = pd.to_datetime(date_from)
+    date_to = pd.to_datetime(date_to)
+
+    # Фильтруем по диапазону
+    base_view = base[(base["День"] >= date_from) & (base["День"] <= date_to)].copy()
+
+    # ---- График 1: дневные значения
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=base_view["День"], y=base_view["CTR"], mode="lines+markers", name="Основная серия",
+            line=dict(color="rgba(52,152,219,1)", width=2.4), marker=dict(size=4),
+            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>",
+        )
+    )
+
+    for s in EXTRA_SERIES:
+        df_s = s["df"]
+        if df_s.empty:
+            continue
+        df_s_view = df_s[(df_s["День"] >= date_from) & (df_s["День"] <= date_to)].copy()
+        style = s.get("style", {})
+        fig.add_trace(
+            go.Scatter(
+                x=df_s_view["День"], y=df_s_view["CTR"], mode="lines+markers", name=f"Серия «{s['name']}»",
+                line=dict(
+                    color=style.get("color", "rgba(255,99,132,1)"),
+                    width=style.get("width", 2.2),
+                    dash=style.get("dash", "dot"),
+                ),
+                marker=dict(size=style.get("marker_size", 4)),
+                hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>",
+            )
+        )
+
+    fig.update_layout(
+        height=560, margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(title="Дата", range=[date_from, date_to], showgrid=False),
+        yaxis=dict(title="CTR", showgrid=True, zeroline=False, tickformat=".2%"),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ---- График 2: тренды по месяцам (среднее CTR за месяц)
+    st.markdown("### Линии тренда по месяцам")
+
+    def monthly_ctr(df_in: pd.DataFrame) -> pd.DataFrame:
+        if df_in.empty:
+            return pd.DataFrame(columns=["Месяц", "CTR"])
+        out = (
+            df_in.set_index("День")
+            .resample("MS")
+            .agg({"CTR": "mean"})
+            .reset_index()
+            .rename(columns={"День": "Месяц"})
+        )
+        return out
+
+    base_m = monthly_ctr(base[(base["День"] >= date_from) & (base["День"] <= date_to)])
+    figm = go.Figure()
+    figm.add_trace(
+        go.Scatter(
+            x=base_m["Месяц"], y=base_m["CTR"], mode="lines+markers", name="Основная серия (ср. за месяц)",
+            line=dict(color="rgba(52,152,219,1)", width=2.8), marker=dict(size=5),
+            hovertemplate="%{x|%b %Y}<br>CTR (ср.): %{y:.2%}<extra></extra>",
+        )
+    )
+
+    for s in EXTRA_SERIES:
+        df_s = s["df"]
+        df_s_m = monthly_ctr(df_s[(df_s["День"] >= date_from) & (df_s["День"] <= date_to)])
+        style = s.get("style", {})
+        figm.add_trace(
+            go.Scatter(
+                x=df_s_m["Месяц"], y=df_s_m["CTR"], mode="lines+markers", name=f"Серия «{s['name']}» (ср. за месяц)",
+                line=dict(
+                    color=style.get("color", "rgba(255,99,132,1)"),
+                    width=2.6,
+                    dash=style.get("dash", "dot"),
+                ),
+                marker=dict(size=5),
+                hovertemplate="%{x|%b %Y}<br>CTR (ср.): %{y:.2%}<extra></extra>",
+            )
+        )
+
+    figm.update_layout(
+        height=520, margin=dict(l=20, r=20, t=30, b=40),
+        xaxis=dict(title="Месяц", showgrid=False),
+        yaxis=dict(title="CTR (ср. за месяц)", showgrid=True, zeroline=False, tickformat=".2%"),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(figm, use_container_width=True)
 
 
