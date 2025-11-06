@@ -8,44 +8,94 @@ import io
 # -----------------------------------------------------
 st.set_page_config(page_title="CTR // Данные", layout="wide")
 
-# -----------------------------------------------------
-# ЭКРАН АВТОРИЗАЦИИ
-# -----------------------------------------------------
-if "auth_ok" not in st.session_state:
-    st.session_state.auth_ok = False
-
-if not st.session_state.auth_ok:
-    st.markdown(
-        """
-        <div style="text-align:center;margin-top:4rem;">
-            <h2>Доступ</h2>
-            <p style="color:#9ca3af;">Введите пароль, чтобы продолжить</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    pwd = st.text_input("Пароль", type="password", label_visibility="collapsed")
-    if pwd == "SportsTeam":
-        st.session_state.auth_ok = True
-        st.rerun()
-    st.stop()
 
 # -----------------------------------------------------
-# ФУНКЦИИ ДЛЯ СЕКРЕТОВ
+# УТИЛИТЫ ДЛЯ СЕКРЕТОВ
 # -----------------------------------------------------
+def _resolve_secret(section: str, key: str):
+    """
+    Возвращает значение секрета как строку, если оно существует.
+    Поддерживает оба формата хранения:
+      1) вложенный: st.secrets[section][key]
+      2) плоский:   st.secrets[f"{section}_{key}"]
+    """
+    # 1) вложенный
+    try:
+        sect = st.secrets[section]
+        try:
+            val = sect.get(key) if hasattr(sect, "get") else sect[key]
+        except Exception:
+            val = None
+        if val is not None:
+            return str(val)
+    except Exception:
+        pass
+
+    # 2) плоский
+    flat_key = f"{section}_{key}"
+    try:
+        if hasattr(st.secrets, "get"):
+            val = st.secrets.get(flat_key)
+            if val is not None:
+                return str(val)
+        else:
+            if flat_key in st.secrets:
+                return str(st.secrets[flat_key])
+    except Exception:
+        pass
+
+    return None
+
+
+def _get_auth_password(default: str = "SportsTeam") -> str:
+    """
+    Пароль для авторизации берём из секретов:
+      [AUTH]
+      PASSWORD = "..."
+    или
+      AUTH_PASSWORD = "..."
+    Фолбэк: default.
+    """
+    try:
+        s = st.secrets
+        # вложенный
+        try:
+            auth_sect = s["AUTH"]
+            if hasattr(auth_sect, "get"):
+                val = auth_sect.get("PASSWORD")
+            else:
+                val = auth_sect["PASSWORD"]
+            if val:
+                return str(val)
+        except Exception:
+            pass
+        # плоский
+        if hasattr(s, "get"):
+            val = s.get("AUTH_PASSWORD")
+            if val:
+                return str(val)
+        else:
+            if "AUTH_PASSWORD" in s:
+                return str(s["AUTH_PASSWORD"])
+    except Exception:
+        pass
+    return default
+
+
 def read_secret_csv(section: str, key: str, date_col: str = None) -> pd.DataFrame:
     """
-    Читает CSV из st.secrets[section][key].
-    Если указан date_col — приводим к datetime и сортируем.
+    Читает CSV из секретов (вложенный или плоский ключ).
+    Если указан date_col — приводит к datetime и сортирует.
     """
-    txt = st.secrets[section].get(key, "").strip()
-    if not txt:
+    txt = _resolve_secret(section, key)
+    if not txt or not str(txt).strip():
         return pd.DataFrame()
-    df = pd.read_csv(io.StringIO(txt))
+    df = pd.read_csv(io.StringIO(str(txt)))
     if date_col and date_col in df.columns:
         df[date_col] = pd.to_datetime(df[date_col])
         df = df.sort_values(date_col).reset_index(drop=True)
     return df
+
 
 def pct_str_to_float(x: str):
     """
@@ -60,6 +110,31 @@ def pct_str_to_float(x: str):
         return float(x) / 100.0
     except Exception:
         return None
+
+
+# -----------------------------------------------------
+# ЭКРАН АВТОРИЗАЦИИ (пароль берётся из секретов)
+# -----------------------------------------------------
+if "auth_ok" not in st.session_state:
+    st.session_state.auth_ok = False
+
+if not st.session_state.auth_ok:
+    st.markdown(
+        """
+        <div style="text-align:center;margin-top:4rem;">
+            <h2>Доступ</h2>
+            <p style="color:#9ca3af;">Введите пароль, чтобы продолжить</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    auth_pwd = _get_auth_password()
+    pwd = st.text_input("Пароль", type="password", label_visibility="collapsed")
+    if pwd == auth_pwd:
+        st.session_state.auth_ok = True
+        st.rerun()
+    st.stop()
+
 
 # -----------------------------------------------------
 # ЗАГРУЗКА ДАННЫХ ИЗ СЕКРЕТОВ
@@ -98,6 +173,7 @@ df_N = read_secret_csv("GLOBAL_TRAFFIC", "N", date_col="date")
 df_V = read_secret_csv("GLOBAL_TRAFFIC", "V", date_col="date")
 df_O = read_secret_csv("GLOBAL_TRAFFIC", "O", date_col="date")
 
+
 # -----------------------------------------------------
 # ПОДГОТОВКА ОСНОВНЫХ ДФ
 # -----------------------------------------------------
@@ -114,6 +190,7 @@ EXTRA_SERIES = [
     {"name": "Ф", "df": df_F, "style": {"dash": "dot", "width": 2.2, "color": "rgba(255,99,132,1)", "marker_size": 4}},
     {"name": "ТГ-Ф", "df": df_TGF, "style": {"dash": "dash", "width": 2.2, "color": "rgba(46,204,113,1)", "marker_size": 4}},
 ]
+
 
 # -----------------------------------------------------
 # ВИЗУАЛЬНЫЙ СЕЛЕКТОР СТРАНИЦ
@@ -134,6 +211,7 @@ with st.container():
         horizontal=True,
         label_visibility="collapsed",
     )
+
 
 # =====================================================
 # 1) ИТОГИ
@@ -375,7 +453,7 @@ elif page == "Трафик в разделе":
     with col_c:
         date_from, date_to = st.slider(
             "Диапазон дат", min_value=min_date.to_pydatetime(), max_value=max_date.to_pydatetime(),
-            value=(min_date.to_pydatetime(), max_date.to_pydatetime()), format="DD.MM.YYYY",
+            value=(min_date.to_pydatetime(), max_value=max_date.to_pydatetime()), format="DD.MM.YYYY",
         )
         trend_mode = st.radio("Агрегация тренда", options=["По неделям","По месяцам"], index=0, horizontal=True)
 
@@ -401,7 +479,7 @@ elif page == "Трафик в разделе":
     # График 2: тренды
     st.markdown("### Тренды (агрегация)")
     def monthly(df_in): return df_in.set_index("День").resample("MS").agg({"CTR":"mean","Просмотры (раздел)":"sum"}).reset_index()
-    def weekly(df_in): 
+    def weekly(df_in):
         out = df_in.set_index("День").resample("W-MON").agg({"CTR":"mean","Просмотры (раздел)":"sum"}).reset_index()
         out["label"] = out["День"].dt.strftime("%d.%m") + "–" + (out["День"]+pd.Timedelta(days=6)).dt.strftime("%d.%m.%Y")
         return out
@@ -659,4 +737,5 @@ else:  # "Общий трафик"
                       hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
                       legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     st.plotly_chart(fig, use_container_width=True)
+
 
