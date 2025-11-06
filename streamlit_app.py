@@ -953,60 +953,81 @@ elif page == "Трафик в разделе":
     )
     st.plotly_chart(figx, use_container_width=True)
 
-        # ----- График 2: тренды по неделям -----
-    st.markdown("### Тренды по неделям (ISO, понедельник–воскресенье)")
+          # ----- График 2: тренды (переключатель Недели/Месяцы) -----
+    st.markdown("### Тренды (агрегация)")
 
-    # средний CTR за неделю, сумма просмотров за неделю
-    weekly = (
-        df_view.set_index("День")
-        .resample("W-MON")  # неделя начинается в понедельник
-        .agg({"CTR": "mean", "Просмотры (раздел)": "sum"})
-        .reset_index()
-        .rename(columns={"День": "Неделя_начало"})
+    view_mode = st.radio(
+        "Агрегация тренда",
+        options=["По неделям", "По месяцам"],
+        index=0,
+        horizontal=True,
+        help="Средний CTR за период и сумма просмотров за период",
     )
-    # подпись диапазона недель
-    weekly["Неделя_конец"] = weekly["Неделя_начало"] + pd.Timedelta(days=6)
-    weekly["Диапазон"] = weekly["Неделя_начало"].dt.strftime("%d.%m") + "–" + weekly["Неделя_конец"].dt.strftime("%d.%m.%Y")
 
-    figw = go.Figure()
-    figw.add_trace(
+    def make_weekly(df_in: pd.DataFrame) -> pd.DataFrame:
+        w = (
+            df_in.set_index("День")
+            .resample("W-MON")  # недели с понедельника
+            .agg({"CTR": "mean", "Просмотры (раздел)": "sum"})
+            .reset_index()
+            .rename(columns={"День": "Период"})
+        )
+        w["Период_конец"] = w["Период"] + pd.Timedelta(days=6)
+        w["label"] = w["Период"].dt.strftime("%d.%m") + "–" + w["Период_конец"].dt.strftime("%d.%m.%Y")
+        return w
+
+    def make_monthly(df_in: pd.DataFrame) -> pd.DataFrame:
+        m = (
+            df_in.set_index("День")
+            .resample("MS")  # начало месяца
+            .agg({"CTR": "mean", "Просмотры (раздел)": "sum"})
+            .reset_index()
+            .rename(columns={"День": "Период"})
+        )
+        m["label"] = m["Период"].dt.strftime("%b %Y")
+        return m
+
+    if view_mode == "По неделям":
+        agg = make_weekly(df_view)
+        title_ctr = "CTR (ср. за неделю)"
+        title_views = "Просмотры (сумма за неделю)"
+        hover_ctr = "Неделя: %{text}<br>CTR (ср.): %{y:.2%}<extra></extra>"
+        hover_views = "Неделя: %{text}<br>Просмотры: %{y:,}<extra></extra>"
+        xaxis_title = "Неделя (дата начала, пн)"
+    else:
+        agg = make_monthly(df_view)
+        title_ctr = "CTR (ср. за месяц)"
+        title_views = "Просмотры (сумма за месяц)"
+        hover_ctr = "Месяц: %{text}<br>CTR (ср.): %{y:.2%}<extra></extra>"
+        hover_views = "Месяц: %{text}<br>Просмотры: %{y:,}<extra></extra>"
+        xaxis_title = "Месяц"
+
+    fig_trend = go.Figure()
+    fig_trend.add_trace(
         go.Scatter(
-            x=weekly["Неделя_начало"],
-            y=weekly["CTR"],
-            mode="lines+markers",
-            name="CTR (ср. за неделю)",
-            line=dict(width=2.6),
-            marker=dict(size=5),
-            text=weekly["Диапазон"],
-            hovertemplate="Неделя: %{text}<br>CTR (ср.): %{y:.2%}<extra></extra>",
-            yaxis="y1",
+            x=agg["Период"], y=agg["CTR"], mode="lines+markers", name=title_ctr,
+            line=dict(width=2.6), marker=dict(size=5),
+            text=agg["label"], hovertemplate=hover_ctr, yaxis="y1",
         )
     )
-    figw.add_trace(
+    fig_trend.add_trace(
         go.Scatter(
-            x=weekly["Неделя_начало"],
-            y=weekly["Просмотры (раздел)"],
-            mode="lines+markers",
-            name="Просмотры (сумма за неделю)",
-            line=dict(width=2.4),
-            marker=dict(size=5),
-            text=weekly["Диапазон"],
-            hovertemplate="Неделя: %{text}<br>Просмотры: %{y:,}<extra></extra>",
-            yaxis="y2",
+            x=agg["Период"], y=agg["Просмотры (раздел)"], mode="lines+markers", name=title_views,
+            line=dict(width=2.4), marker=dict(size=5),
+            text=agg["label"], hovertemplate=hover_views, yaxis="y2",
         )
     )
-    figw.update_layout(
-        height=520,
-        margin=dict(l=20, r=20, t=30, b=40),
-        xaxis=dict(title="Неделя (дата начала, пн)", showgrid=False),
-        yaxis=dict(title="CTR (ср. за неделю)", showgrid=True, zeroline=False, tickformat=".2%"),
-        yaxis2=dict(title="Просмотры (сумма за неделю)", overlaying="y", side="right", showgrid=False),
+    fig_trend.update_layout(
+        height=520, margin=dict(l=20, r=20, t=30, b=40),
+        xaxis=dict(title=xaxis_title, showgrid=False),
+        yaxis=dict(title=title_ctr, showgrid=True, zeroline=False, tickformat=".2%"),
+        yaxis2=dict(title=title_views, overlaying="y", side="right", showgrid=False),
         hovermode="x unified",
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
-    st.plotly_chart(figw, use_container_width=True)
+    st.plotly_chart(fig_trend, use_container_width=True)
+
 
 
     # Таблица для удобного экспорта/просмотра
