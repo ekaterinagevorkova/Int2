@@ -749,27 +749,24 @@ with st.container():
 )
 
 if page == "Итоги":
-    # ==============================
-    # ИТОГИ: робастные локальные пики CTR (окно ±10 дней)
-    # ==============================
     import numpy as np
+    import io
 
-    st.markdown("### Итоги: локальные пики CTR и факторы (робастный критерий, окно ±10 дней)")
+    st.markdown("### Итоги: локальные пики CTR и факторы (окно ±10 дней, робастный критерий)")
 
-    # --- границы флайтов (как в «Смена креативов») ---
-    b1 = pd.to_datetime("2025-04-23")
-    b2 = pd.to_datetime("2025-07-07")
-    b3 = pd.to_datetime("2025-08-14")
-    b4 = pd.to_datetime("2025-10-22")
-    b5 = pd.to_datetime("2025-10-29")
+    # --- Границы флайтов (для «Номер креатива») ---
+    b1, b2, b3, b4, b5 = map(pd.to_datetime, [
+        "2025-04-23", "2025-07-07", "2025-08-14", "2025-10-22", "2025-10-29"
+    ])
 
-    # ---------- Вспомогательные функции ----------
+    # ---------- Утилиты ----------
     def month_index_from_anchor(d: pd.Timestamp, anchor=pd.Timestamp("2025-04-22")) -> int:
-        shifted = d - pd.Timedelta(days=21)
-        anchor_shifted = anchor - pd.Timedelta(days=21)
-        return (shifted.year - anchor_shifted.year) * 12 + (shifted.month - anchor_shifted.month) + 1
+        # «Начиная с 22 апреля»: смещаем якорь на 21 день, чтобы 22-е попадало в первый месяц
+        s, a = d - pd.Timedelta(days=21), anchor - pd.Timedelta(days=21)
+        return (s.year - a.year) * 12 + (s.month - a.month) + 1
 
     def in_active_season(d: pd.Timestamp) -> bool:
+        # Активный сезон: февраль–июнь
         return d.month in (2, 3, 4, 5, 6)
 
     def creative_number_for_day(d: pd.Timestamp) -> int | None:
@@ -780,14 +777,12 @@ if page == "Итоги":
         return None
 
     def creative_change_within_plus5(d: pd.Timestamp) -> bool:
-        for cp in (b2, b3, b4):
-            if d <= cp <= d + pd.Timedelta(days=5):
-                return True
-        return False
+        # Смена креатива считается если в интервале [день; день+5] есть переключение
+        return any(d <= cp <= d + pd.Timedelta(days=5) for cp in (b2, b3, b4))
 
     def event_exact_titles(d: pd.Timestamp) -> list[str]:
-        if df_events is None or df_events.empty:
-            return []
+        # Событие фиксируется, если начало или окончание совпало с датой
+        if df_events is None or df_events.empty: return []
         rows = df_events[
             (df_events["начало"].dt.date == d.date()) |
             (df_events["окончание"].dt.date == d.date())
@@ -797,165 +792,128 @@ if page == "Итоги":
     def mad(x: np.ndarray) -> float:
         x = np.asarray(x, dtype=float)
         x = x[~np.isnan(x)]
-        if x.size == 0:
-            return np.nan
-        med = np.median(x)
-        return np.median(np.abs(x - med))
+        return np.median(np.abs(x - np.median(x))) if x.size else np.nan
 
-    # ---------- Подготовка базовой таблицы дней ----------
+    # ---------- База по дням ----------
     ctr = df_ctr.sort_values("День").reset_index(drop=True).copy()
     base = pd.DataFrame({"День": pd.date_range(ctr["День"].min(), ctr["День"].max(), freq="D")})
     base = base.merge(ctr[["День", "CTR"]], on="День", how="left")
 
-    # Подмешаем «Н», «В», «О» (если уже определены в «Общий трафик»)
-    if "df_N" in globals(): base = base.merge(df_N, on="День", how="left")        # колонка "Н"
-    if "df_V" in globals(): base = base.merge(df_V, on="День", how="left")        # колонка "В"
-    if "df_O" in globals(): base = base.merge(df_O, on="День", how="left")        # колонка "О"
+    # Подхватываем «Общий трафик» если он объявлен (Н / В / О)
+    if "df_N" in globals(): base = base.merge(df_N, on="День", how="left")   # колонка "N"
+    if "df_V" in globals(): base = base.merge(df_V, on="День", how="left")   # колонка "V"
+    if "df_O" in globals(): base = base.merge(df_O, on="День", how="left")   # колонка "O"
+
     base = base.sort_values("День").reset_index(drop=True)
 
-    # --- предрасчёт по флайтам
-    def flight_slice(dfrom: pd.Timestamp, dto: pd.Timestamp) -> pd.Series:
-        m = (base["День"] >= dfrom) & (base["День"] < dto)
-        return base.loc[m, "CTR"]
+    # ---------- Робастный детектор пиков ----------
+    # окно локальности
+    W = 10
+    # минимальное z относительно медианы окна
+    z_min = 1.0
+    # относительные приращения к среднему окна без центра:
+    relA0, relB0 = 0.04, 0.03
+    target_low, target_high = 20, 25  # хотим ~20–25 пиков
+    step, max_iters = 0.005, 30
 
+    # Предрасчёт по флайтам (для минимального порога на уровне флайта)
+    def flight_slice(d1, d2): return base.loc[(base["День"] >= d1) & (base["День"] < d2), "CTR"]
     flight_stats = {
         1: flight_slice(b1, b2),
         2: flight_slice(b2, b3),
         3: flight_slice(b3, b4),
-        4: flight_slice(b4, b5 + pd.Timedelta(days=0)),
+        4: flight_slice(b4, b5),
     }
     flight_meds = {k: np.nanmedian(v.values) if v.size else np.nan for k, v in flight_stats.items()}
-    flight_sigmas = {}
-    for k, v in flight_stats.items():
-        m_ = mad(v.values)
-        if np.isnan(m_) or m_ == 0:
-            vv = v.values.astype(float); vv = vv[~np.isnan(vv)]
-            if vv.size:
-                iqr = np.nanpercentile(vv, 75) - np.nanpercentile(vv, 25)
-                sigma_rb = iqr / 1.349 if iqr > 0 else np.nan
-            else:
-                sigma_rb = np.nan
-        else:
-            sigma_rb = 1.4826 * m_
-        flight_sigmas[k] = sigma_rb
+    flight_sigs = {k: 1.4826 * mad(v.values) for k, v in flight_stats.items()}
 
-    # ---------- Робастный детектор пиков ----------
-    W = 10
-    z_min = 1.0
-    relA0 = 0.04
-    relB0 = 0.03
-    target_low, target_high = 20, 25
-    step = 0.005
-    max_iters = 30
-
-    def make_candidates(relA: float, relB: float) -> list[int]:
+    def make_candidates(relA, relB):
         cand = []
         vals = base["CTR"].values
         for i in range(len(base)):
-            center = vals[i]
-            if np.isnan(center): continue
-            left = max(0, i - W); right = min(len(base) - 1, i + W)
+            c = vals[i]
+            if np.isnan(c): 
+                continue
+            L, R = max(0, i - W), min(len(base) - 1, i + W)
+            win = base["CTR"].iloc[L:R+1]
+            med, sigma = np.nanmedian(win), 1.4826 * mad(win.values)
+            mean_wo = np.nanmean(win.drop(base.index[i], errors="ignore"))
+            rel = (c - mean_wo) / mean_wo if mean_wo > 0 else np.nan
+            q85 = np.nanquantile(win, 0.85)
+            z = (c - med) / sigma if sigma > 0 else 0
 
-            win = base["CTR"].iloc[left:right+1].copy()
-            win_wo = win.drop(base.index[i], errors="ignore")
-            win_vals = win.values.astype(float)
-            wo_vals = win_wo.values.astype(float)
+            condA = (z >= z_min) and (rel >= relA)
+            condB = (c >= q85) and (rel >= relB)
+            if not (condA or condB):
+                continue
 
-            med_win = np.nanmedian(win_vals) if win_vals.size else np.nan
-            mad_win = mad(win_vals)
-            sigma = 1.4826 * mad_win if (not np.isnan(mad_win) and mad_win != 0) else np.nan
-            if (np.isnan(sigma) or sigma == 0) and win_vals.size:
-                iqr = np.nanpercentile(win_vals, 75) - np.nanpercentile(win_vals, 25)
-                sigma = iqr / 1.349 if iqr > 0 else np.nan
-
-            mean_wo = np.nanmean(wo_vals) if wo_vals.size else np.nan
-            rel = (center - mean_wo) / mean_wo if (not np.isnan(mean_wo) and mean_wo > 0) else np.nan
-            q85 = np.nanquantile(win_vals, 0.85) if win_vals.size else np.nan
-            z = (center - med_win) / sigma if (not np.isnan(sigma) and sigma > 0) else 0.0
-
-            condA = (z >= z_min) and (not np.isnan(rel)) and (rel >= relA)
-            condB = (not np.isnan(q85)) and (center >= q85) and (not np.isnan(rel)) and (rel >= relB)
-            if not (condA or condB): continue
-
+            # мягкая отсечка по флайту
             d = base["День"].iloc[i]
-            creo = creative_number_for_day(d)
-            if creo is not None:
-                med_f = flight_meds.get(creo, np.nan)
-                sig_f = flight_sigmas.get(creo, np.nan)
-                if (not np.isnan(med_f)) and (not np.isnan(sig_f)):
-                    if center < (med_f + 0.5 * sig_f): continue
+            cr = creative_number_for_day(d)
+            if cr and not (np.isnan(flight_meds[cr]) or np.isnan(flight_sigs[cr])):
+                if c < flight_meds[cr] + 0.5 * flight_sigs[cr]:
+                    continue
+
             cand.append(i)
         return cand
 
-    def nms_keep_max(cand_idx: list[int], min_gap_days: int = 2) -> list[int]:
-        if not cand_idx: return []
-        cand_idx = sorted(set(cand_idx))
-        kept = []
-        cluster = [cand_idx[0]]
-        for a, b in zip(cand_idx, cand_idx[1:]):
-            if (b - a) <= min_gap_days:
+    def nms_keep_max(idx, gap=2):
+        # Оставляем максимум внутри близких индексов (некое NMS по оси X)
+        if not idx: return []
+        idx = sorted(set(idx))
+        kept, cluster = [], [idx[0]]
+        for a, b in zip(idx, idx[1:]):
+            if b - a <= gap:
                 cluster.append(b)
             else:
-                ctrs = [(idx, base["CTR"].iloc[idx]) for idx in cluster]
-                best = max(ctrs, key=lambda t: (0 if np.isnan(t[1]) else t[1]))[0]
-                kept.append(best); cluster = [b]
-        ctrs = [(idx, base["CTR"].iloc[idx]) for idx in cluster]
-        best = max(ctrs, key=lambda t: (0 if np.isnan(t[1]) else t[1]))[0]
-        kept.append(best)
+                kept.append(max(cluster, key=lambda j: base["CTR"].iloc[j]))
+                cluster = [b]
+        kept.append(max(cluster, key=lambda j: base["CTR"].iloc[j]))
         return kept
 
     relA, relB = relA0, relB0
-    best_pack = ([], relA, relB, 10**9)
+    best_pack = ([], 1e9)  # (indices, score)
     mid_target = (target_low + target_high) / 2
 
     for _ in range(max_iters):
         cand = make_candidates(relA, relB)
-        picked = nms_keep_max(cand, min_gap_days=2)
+        picked = nms_keep_max(cand)
         cnt = len(picked)
         score = abs(cnt - mid_target)
-        if score < best_pack[3]:
-            best_pack = (picked, relA, relB, score)
+        if score < best_pack[1]:
+            best_pack = (picked, score)
         if target_low <= cnt <= target_high:
-            final_indices, tuned_relA, tuned_relB = picked, relA, relB
+            final_indices = picked
             break
+        # Подкручиваем порог, чтобы приблизиться к таргету
         if cnt < target_low:
-            relA = max(0.0, relA - step); relB = max(0.0, relB - step)
+            relA -= step; relB -= step
         else:
-            relA = min(0.25, relA + step); relB = min(0.25, relB + step)
+            relA += step; relB += step
     else:
-        final_indices, tuned_relA, tuned_relB, _ = best_pack
+        final_indices = best_pack[0]
 
-    # ---------- Сбор таблицы пиков ----------
+    # ---------- Формирование таблицы пиков ----------
+    def _local_above_mean(i: int, col: str) -> bool:
+        if col not in base.columns: return False
+        s = base[col]
+        L, R = max(0, i - W), min(len(s) - 1, i + W)
+        win = s.iloc[L:R+1].copy()
+        if base.index[i] in win.index:
+            win = win.drop(base.index[i], errors="ignore")
+        return bool(len(win) and pd.notna(s.iloc[i]) and (s.iloc[i] > win.mean()))
+
     peaks_rows = []
     for i in final_indices:
         d = base["День"].iloc[i]
-
-        def local_above(series_name: str) -> bool:
-            if series_name not in base.columns: return False
-            series = base[series_name]
-            left = max(0, i - W); right = min(len(series) - 1, i + W)
-            win = series.iloc[left:right+1].copy()
-            win = win.drop(series.index[i], errors="ignore")
-            loc_mean = win.mean() if len(win) else np.nan
-            val = series.iloc[i]
-            return (pd.notna(val) and pd.notna(loc_mean) and val > loc_mean)
-
-        flag_V = local_above("В")
-        flag_N = local_above("Н")
-        flag_O = local_above("О")
-
-        has_creo_change = creative_change_within_plus5(d)
-        titles = event_exact_titles(d)
-        has_exact_event = len(titles) > 0
-        titles_joined = ", ".join(titles)
-
+        events = event_exact_titles(d)
         peaks_rows.append({
             "Локальные пики CTR (±10 дней) – дата": d,
-            "Локальные просмотры баннеров выше – да/нет": "да" if flag_V else "нет",
-            "Локально больше Н-пользователей – да/нет": "да" if flag_N else "нет",
-            "Локально больше О-пользователей – да/нет": "да" if flag_O else "нет",
-            "Смена креатива (в диапазоне +5 дней) – да/нет": "да" if has_creo_change else "нет",
-            "Точные события в этот день – да/нет + название": ("да — " + titles_joined) if has_exact_event else "нет",
+            "Локальные просмотры баннеров выше – да/нет": "да" if _local_above_mean(i, "V") else "нет",
+            "Локально больше Н-пользователей – да/нет": "да" if _local_above_mean(i, "N") else "нет",
+            "Локально больше О-пользователей – да/нет": "да" if _local_above_mean(i, "O") else "нет",
+            "Смена креатива (в диапазоне +5 дней) – да/нет": "да" if creative_change_within_plus5(d) else "нет",
+            "Точные события в этот день – да/нет + название": ("да — " + ", ".join(events)) if events else "нет",
             "Активный сезон (февраль–июнь) – да/нет": "да" if in_active_season(d) else "нет",
             "Номер месяца (с 22 апреля)": month_index_from_anchor(d),
             "Номер креатива": creative_number_for_day(d) or "",
@@ -963,19 +921,13 @@ if page == "Итоги":
         })
 
     df_peaks = pd.DataFrame(peaks_rows).sort_values("Локальные пики CTR (±10 дней) – дата").reset_index(drop=True)
-    if df_peaks.empty:
-        st.info("Локальные пики CTR не найдены — попробуйте увеличить период данных.")
-        st.stop()
+    df_peaks["Дата"] = df_peaks["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
+    df_peaks["CTR (в %)"] = df_peaks["_CTR"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
 
-    st.caption(
-        f"Пиков найдено: {len(df_peaks)} (цель: 20–25) • "
-        f"порог A (z≥{z_min:.1f} и rel≥{tuned_relA*100:.1f}%), порог B (q85 и rel≥{tuned_relB*100:.1f}%) • "
-        "окно: ±10 дней • смена креатива: +5 дней • NMS: минимум 2 дня между пиками"
-    )
-
-    # ---------- Таблица пиков ----------
-    show_cols = [
-        "Локальные пики CTR (±10 дней) – дата",
+    # ---------- Таблица пиков (отображение) ----------
+    cols_order = [
+        "Дата",
+        "CTR (в %)",
         "Локальные просмотры баннеров выше – да/нет",
         "Локально больше Н-пользователей – да/нет",
         "Локально больше О-пользователей – да/нет",
@@ -985,162 +937,135 @@ if page == "Итоги":
         "Номер месяца (с 22 апреля)",
         "Номер креатива",
     ]
-    df_show = df_peaks[show_cols].copy()
-    df_show["Локальные пики CTR (±10 дней) – дата"] = df_show["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
+    st.markdown("#### Таблица локальных пиков CTR")
+    st.dataframe(df_peaks[cols_order], use_container_width=True, hide_index=True)
+    st.markdown(f"**Количество пиков:** {len(df_peaks)}")
 
-    st.markdown("#### Локальные пики CTR (окно ±10 дней)")
-    st.dataframe(df_show, use_container_width=True, hide_index=True)
-
-    # ---------- Карточки: доля «да» по признакам ----------
-    bool_cols = [
+    # ---------- Карточки: % пиков с положительным признаком ----------
+    # (не считаем для «Номер месяца» и «Номер креатива»)
+    kpi_cols = [
         "Локальные просмотры баннеров выше – да/нет",
         "Локально больше Н-пользователей – да/нет",
         "Локально больше О-пользователей – да/нет",
         "Смена креатива (в диапазоне +5 дней) – да/нет",
         "Точные события в этот день – да/нет + название",
-        # Активный сезон не учитываем в «совпадениях факторов» ниже, но здесь он остаётся для общей статистики.
         "Активный сезон (февраль–июнь) – да/нет",
     ]
-    total = len(df_peaks)
-    stats = []
-    for col in bool_cols:
+    total_peaks = max(1, len(df_peaks))
+    def _is_yes(col, v):
         if col == "Точные события в этот день – да/нет + название":
-            pos = df_peaks[col].fillna("").str.startswith("да").sum()
-        else:
-            pos = (df_peaks[col] == "да").sum()
-        pct = 0.0 if total == 0 else 100.0 * pos / total
-        stats.append({"Признак": col, "Доля «да», %": pct})
-    df_stats = pd.DataFrame(stats).sort_values("Доля «да», %", ascending=False).reset_index(drop=True)
+            return isinstance(v, str) and v.startswith("да")
+        return v == "да"
+    metrics = []
+    for col in kpi_cols:
+        yes_cnt = int(df_peaks[col].apply(lambda v: _is_yes(col, v)).sum())
+        metrics.append({"title": col.replace(" – да/нет", ""), "value": 100.0 * yes_cnt / total_peaks})
+    metrics = sorted(metrics, key=lambda x: x["value"], reverse=True)
 
     # Стили карточек
     st.markdown("""
         <style>
-            .kpi-card { background:#1f2937; color:#ffffff; padding:14px 16px;
-                        border-radius:14px; border:1px solid rgba(255,255,255,0.08);
-                        box-shadow:0 4px 20px rgba(0,0,0,0.20); }
-            .kpi-label { font-size:12px; line-height:1.2; opacity:0.95; }
-            .kpi-value { font-size:24px; font-weight:700; margin-top:6px; }
+          .kpi-wrap{display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 8px 0}
+          .kpi-card{background:#1f2937;color:#ffffff;padding:12px 14px;border-radius:12px;
+                    border:1px solid rgba(255,255,255,0.08)}
+          .kpi-title{font-size:12px;color:#e5e7eb;opacity:.95}
+          .kpi-value{font-size:22px;font-weight:800;margin-top:4px}
         </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("#### Доли положительных признаков по всем пикам CTR (окно ±10 дней)")
-    cols = st.columns(3)
-    for i, row in df_stats.iterrows():
-        with cols[i % 3]:
-            st.markdown(
-                f"""
-                <div class="kpi-card">
-                    <div class="kpi-label">{row['Признак']}</div>
-                    <div class="kpi-value">{row['Доля «да», %']:.0f}%</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    # ===== Карточки «совпадений факторов»: 1–5 (без месяца/креатива/сезона) =====
-st.markdown("#### Совпадения факторов у пиков (без месяца/креатива/сезона)")
-
-factor_cols = [
-    "Локальные просмотры баннеров выше – да/нет",
-    "Локально больше Н-пользователей – да/нет",
-    "Локально больше О-пользователей – да/нет",
-    "Смена креатива (в диапазоне +5 дней) – да/нет",
-    "Точные события в этот день – да/нет + название",
-]
-
-def _count_yes(row) -> int:
-    c = 0
-    for col in factor_cols:
-        if col == "Точные события в этот день – да/нет + название":
-            if isinstance(row[col], str) and row[col].startswith("да"):
-                c += 1
-        else:
-            if row[col] == "да":
-                c += 1
-    return c
-
-df_peaks["_factors_yes"] = df_peaks.apply(_count_yes, axis=1)
-
-total_peaks = int(len(df_peaks))
-buckets = []
-for k in range(1, len(factor_cols) + 1):  # 1..5
-    n = int((df_peaks["_factors_yes"] == k).sum())
-    pct = 0.0 if total_peaks == 0 else 100.0 * n / total_peaks
-    buckets.append((k, n, pct))
-
-# стили карточек
-st.markdown("""
-    <style>
-      .kpi-card { background:#1f2937; color:#ffffff; padding:14px 16px;
-                  border-radius:14px; border:1px solid rgba(255,255,255,0.08);
-                  box-shadow:0 4px 20px rgba(0,0,0,0.20); }
-      .kpi-label { font-size:12px; line-height:1.2; opacity:0.95; }
-      .kpi-value { font-size:24px; font-weight:700; margin-top:6px; }
-    </style>
-""", unsafe_allow_html=True)
-
-def _ru_noun(n, s1, s2, s5):
-    n = int(n); n10 = n % 10; n100 = n % 100
-    if 11 <= n100 <= 14: return s5
-    if n10 == 1: return s1
-    if 2 <= n10 <= 4: return s2
-    return s5
-
-cols_cards = st.columns(5)
-for i, (k, n, pct) in enumerate(buckets):
-    with cols_cards[i % 5]:
+    st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
+    for m in metrics:
         st.markdown(
-            f"""
-            <div class="kpi-card">
-              <div class="kpi-label">Совпало {k} {_ru_noun(k,"фактор","фактора","факторов")}</div>
-              <div class="kpi-value">{n} из {total_peaks} ({pct:.0f}%)</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+            f"""<div class="kpi-card">
+                    <div class="kpi-title">{m['title']}</div>
+                    <div class="kpi-value">{m['value']:.0f}%</div>
+                 </div>""",
+            unsafe_allow_html=True
         )
-# ===== Таблица: пики, где совпал ровно 1 фактор =====
-st.markdown("#### Пики, где совпал только 1 фактор")
+    st.markdown('</div>', unsafe_allow_html=True)
 
-mask_one = (df_peaks["_factors_yes"] == 1)
+    # ---------- Совпадения факторов 1–5 (без месяца/креатива/сезона) ----------
+    factor_cols = [
+        "Локальные просмотры баннеров выше – да/нет",
+        "Локально больше Н-пользователей – да/нет",
+        "Локально больше О-пользователей – да/нет",
+        "Смена креатива (в диапазоне +5 дней) – да/нет",
+        "Точные события в этот день – да/нет + название",
+    ]
+    def _count_yes(row) -> int:
+        c = 0
+        for col in factor_cols:
+            if col == "Точные события в этот день – да/нет + название":
+                if isinstance(row[col], str) and row[col].startswith("да"):
+                    c += 1
+            else:
+                if row[col] == "да":
+                    c += 1
+        return c
+    df_peaks["_factors_yes"] = df_peaks.apply(_count_yes, axis=1)
 
-def _only_factor_name(row) -> str:
-    for col in factor_cols:
-        if col == "Точные события в этот день – да/нет + название":
-            if isinstance(row[col], str) and row[col].startswith("да"):
-                return "Точные события в этот день"
-        else:
-            if row[col] == "да":
-                return col.replace(" – да/нет","")
-    return ""
+    buckets = []
+    total = len(df_peaks)
+    for k in range(1, len(factor_cols) + 1):  # 1..5
+        n = int((df_peaks["_factors_yes"] == k).sum())
+        pct = 0.0 if total == 0 else 100.0 * n / total
+        buckets.append((k, n, pct))
 
-df_one = df_peaks.loc[mask_one, [
-    "Локальные пики CTR (±10 дней) – дата", "_CTR"
-] + factor_cols].copy()
+    st.markdown("#### Совпадения факторов у пиков (1–5)")
+    cols_b = st.columns(5)
+    for i, (k, n, pct) in enumerate(buckets):
+        with cols_b[i % 5]:
+            st.markdown(
+                f"""<div class="kpi-card">
+                        <div class="kpi-title">Совпало {k} факторов</div>
+                        <div class="kpi-value">{n} из {total} ({pct:.0f}%)</div>
+                    </div>""", unsafe_allow_html=True)
 
-df_one["Единственный фактор"] = df_one.apply(_only_factor_name, axis=1)
-df_one["Дата"] = df_one["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
-df_one["CTR (в %)"] = df_one["_CTR"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
+    # ---------- Таблица: пики, где совпал РОВНО 1 фактор ----------
+    st.markdown("#### Пики, где совпал только 1 фактор")
+    def _only_factor_name(row) -> str:
+        for col in factor_cols:
+            if col == "Точные события в этот день – да/нет + название":
+                if isinstance(row[col], str) and row[col].startswith("да"):
+                    return "Точные события в этот день"
+            else:
+                if row[col] == "да":
+                    return col.replace(" – да/нет", "")
+        return ""
+    df_one = df_peaks.loc[df_peaks["_factors_yes"] == 1, ["Локальные пики CTR (±10 дней) – дата", "_CTR"] + factor_cols].copy()
+    df_one["Единственный фактор"] = df_one.apply(_only_factor_name, axis=1)
+    df_one["Дата"] = df_one["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
+    df_one["CTR (в %)"] = df_one["_CTR"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
+    st.dataframe(df_one[["Дата", "Единственный фактор", "CTR (в %)"]].sort_values("Дата"),
+                 use_container_width=True, hide_index=True)
 
-st.dataframe(df_one[["Дата", "Единственный фактор", "CTR (в %)"]]
-             .sort_values("Дата"), use_container_width=True, hide_index=True)
+    # ---------- Экспорт (CSV и XLSX) ----------
+    st.markdown("#### Экспорт")
+    # Готовим «красивую» таблицу к выгрузке (без служебных колонок)
+    export_cols = cols_order + []  # сохраняем тот же набор, что и на экране
+    df_export = df_peaks[export_cols].copy()
 
+    # CSV
+    csv_buf = io.StringIO()
+    df_export.to_csv(csv_buf, index=False)
+    st.download_button(
+        "⬇️ Скачать пики (CSV)",
+        data=csv_buf.getvalue().encode("utf-8"),
+        file_name="peaks_ctr.csv",
+        mime="text/csv",
+    )
 
-    # ---------- Экспорт ----------
-    c1, c2 = st.columns(2)
-    with c1:
-        st.download_button(
-            "Скачать таблицу пиков (CSV)",
-            data=df_show.to_csv(index=False).encode("utf-8"),
-            file_name="peaks_table_robust_window10.csv",
-            mime="text/csv",
-        )
-    with c2:
-        st.download_button(
-            "Скачать карточки (% «да») (CSV)",
-            data=df_stats.to_csv(index=False).encode("utf-8"),
-            file_name="peaks_kpi_robust_window10.csv",
-            mime="text/csv",
-        )
+    # XLSX
+    xlsx_buf = io.BytesIO()
+    with pd.ExcelWriter(xlsx_buf, engine="xlsxwriter") as writer:
+        df_export.to_excel(writer, sheet_name="Peaks", index=False)
+        df_one[["Дата", "Единственный фактор", "CTR (в %)"]].to_excel(writer, sheet_name="OnlyOneFactor", index=False)
+    st.download_button(
+        "⬇️ Скачать пики (XLSX)",
+        data=xlsx_buf.getvalue(),
+        file_name="peaks_ctr.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 
