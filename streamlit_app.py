@@ -1037,59 +1037,93 @@ if page == "Итоги":
                 unsafe_allow_html=True,
             )
 
-    # ---------- НОВОЕ: Карточки «совпадений факторов» (без активного сезона, номера месяца, номера креатива) ----------
-    st.markdown("#### Совпадения факторов у пиков (без месяца/креатива/сезона)")
+    # ===== Карточки «совпадений факторов»: 1–5 (без месяца/креатива/сезона) =====
+st.markdown("#### Совпадения факторов у пиков (без месяца/креатива/сезона)")
 
-    factor_cols = [
-        "Локальные просмотры баннеров выше – да/нет",
-        "Локально больше Н-пользователей – да/нет",
-        "Локально больше О-пользователей – да/нет",
-        "Смена креатива (в диапазоне +5 дней) – да/нет",
-        "Точные события в этот день – да/нет + название",
-    ]
+factor_cols = [
+    "Локальные просмотры баннеров выше – да/нет",
+    "Локально больше Н-пользователей – да/нет",
+    "Локально больше О-пользователей – да/нет",
+    "Смена креатива (в диапазоне +5 дней) – да/нет",
+    "Точные события в этот день – да/нет + название",
+]
 
-    def yes_count_row(row) -> int:
-        cnt = 0
-        for c in factor_cols:
-            if c == "Точные события в этот день – да/нет + название":
-                if isinstance(row[c], str) and row[c].startswith("да"):
-                    cnt += 1
-            else:
-                if row[c] == "да":
-                    cnt += 1
-        return cnt
+def _count_yes(row) -> int:
+    c = 0
+    for col in factor_cols:
+        if col == "Точные события в этот день – да/нет + название":
+            if isinstance(row[col], str) and row[col].startswith("да"):
+                c += 1
+        else:
+            if row[col] == "да":
+                c += 1
+    return c
 
-    df_peaks["_factors_yes"] = df_peaks.apply(yes_count_row, axis=1)
+df_peaks["_factors_yes"] = df_peaks.apply(_count_yes, axis=1)
 
-    # агрегируем: сколько пиков имеют ровно k факторов (k=0..5), показываем с 2 и выше
-    max_k = len(factor_cols)
-    buckets = []
-    for k in range(2, max_k + 1):
-        n = int((df_peaks["_factors_yes"] == k).sum())
-        pct = 0.0 if total == 0 else 100.0 * n / total
-        buckets.append((k, n, pct))
+total_peaks = int(len(df_peaks))
+buckets = []
+for k in range(1, len(factor_cols) + 1):  # 1..5
+    n = int((df_peaks["_factors_yes"] == k).sum())
+    pct = 0.0 if total_peaks == 0 else 100.0 * n / total_peaks
+    buckets.append((k, n, pct))
 
-    # красивые подписи
-    def ru_noun(n, s1, s2, s5):
-        n = int(n)
-        n10 = n % 10; n100 = n % 100
-        if 11 <= n100 <= 14: return s5
-        if n10 == 1: return s1
-        if 2 <= n10 <= 4: return s2
-        return s5
+# стили карточек
+st.markdown("""
+    <style>
+      .kpi-card { background:#1f2937; color:#ffffff; padding:14px 16px;
+                  border-radius:14px; border:1px solid rgba(255,255,255,0.08);
+                  box-shadow:0 4px 20px rgba(0,0,0,0.20); }
+      .kpi-label { font-size:12px; line-height:1.2; opacity:0.95; }
+      .kpi-value { font-size:24px; font-weight:700; margin-top:6px; }
+    </style>
+""", unsafe_allow_html=True)
 
-    cols2 = st.columns(4)
-    for i, (k, n, pct) in enumerate(buckets):
-        with cols2[i % 4]:
-            st.markdown(
-                f"""
-                <div class="kpi-card">
-                    <div class="kpi-label">Совпало {k} {ru_noun(k, "фактор", "фактора", "факторов")}</div>
-                    <div class="kpi-value">{n} из {total} ({pct:.0f}%)</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+def _ru_noun(n, s1, s2, s5):
+    n = int(n); n10 = n % 10; n100 = n % 100
+    if 11 <= n100 <= 14: return s5
+    if n10 == 1: return s1
+    if 2 <= n10 <= 4: return s2
+    return s5
+
+cols_cards = st.columns(5)
+for i, (k, n, pct) in enumerate(buckets):
+    with cols_cards[i % 5]:
+        st.markdown(
+            f"""
+            <div class="kpi-card">
+              <div class="kpi-label">Совпало {k} {_ru_noun(k,"фактор","фактора","факторов")}</div>
+              <div class="kpi-value">{n} из {total_peaks} ({pct:.0f}%)</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+# ===== Таблица: пики, где совпал ровно 1 фактор =====
+st.markdown("#### Пики, где совпал только 1 фактор")
+
+mask_one = (df_peaks["_factors_yes"] == 1)
+
+def _only_factor_name(row) -> str:
+    for col in factor_cols:
+        if col == "Точные события в этот день – да/нет + название":
+            if isinstance(row[col], str) and row[col].startswith("да"):
+                return "Точные события в этот день"
+        else:
+            if row[col] == "да":
+                return col.replace(" – да/нет","")
+    return ""
+
+df_one = df_peaks.loc[mask_one, [
+    "Локальные пики CTR (±10 дней) – дата", "_CTR"
+] + factor_cols].copy()
+
+df_one["Единственный фактор"] = df_one.apply(_only_factor_name, axis=1)
+df_one["Дата"] = df_one["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
+df_one["CTR (в %)"] = df_one["_CTR"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
+
+st.dataframe(df_one[["Дата", "Единственный фактор", "CTR (в %)"]]
+             .sort_values("Дата"), use_container_width=True, hide_index=True)
+
 
     # ---------- Экспорт ----------
     c1, c2 = st.columns(2)
