@@ -1261,7 +1261,96 @@ elif page == "Просмотры":
         peaks3[["Дата", "CTR (в %)", "Просмотры", "Уровень просмотров"]],
         use_container_width=True, hide_index=True,
     )
+    # =====================================================
+# 7) ОБЩИЙ ТРАФИК — Н / В / О + CTR
+# =====================================================
+elif page == "Общий трафик":
+    st.markdown("### Общий трафик: Н / В / О + CTR")
 
+    # Собираем общую таблицу дат
+    base_dates = pd.DataFrame({"День": pd.date_range(
+        start=min(df_N["День"].min(), df_V["День"].min(), df_O["День"].min(), df_ctr["День"].min()),
+        end=max(df_N["День"].max(), df_V["День"].max(), df_O["День"].max(), df_ctr["День"].max()),
+        freq="D"
+    )})
+
+    # Объединяем ряды
+    df_total = base_dates.merge(df_N, on="День", how="left") \
+                         .merge(df_V, on="День", how="left") \
+                         .merge(df_O, on="День", how="left") \
+                         .merge(df_ctr[["День", "CTR"]], on="День", how="left")
+
+    # Фильтры диапазона
+    min_date = df_total["День"].min(); max_date = df_total["День"].max()
+    st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
+    col_l, col_c, col_r = st.columns([1, 2.5, 1])
+    with col_c:
+        date_from, date_to = st.slider(
+            "Диапазон дат",
+            min_value=min_date.to_pydatetime(),
+            max_value=max_date.to_pydatetime(),
+            value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+            format="DD.MM.YYYY",
+        )
+
+    df_view = df_total[(df_total["День"] >= pd.to_datetime(date_from)) & (df_total["День"] <= pd.to_datetime(date_to))].copy()
+
+    # Переключатели линий
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: show_N = st.checkbox("Показать «Н»", True)
+    with c2: show_V = st.checkbox("Показать «В»", True)
+    with c3: show_O = st.checkbox("Показать «О»", True)
+    with c4: show_CTR = st.checkbox("Показать CTR", True)
+    with c5: smooth = st.checkbox("Сгладить (7 дн.)", False, help="Простое скользящее среднее")
+
+    if smooth:
+        for col in ["Н", "В", "О"]:
+            if col in df_view:
+                df_view[col] = df_view[col].rolling(7, min_periods=1, center=False).mean()
+        if "CTR" in df_view:
+            df_view["CTR"] = df_view["CTR"].rolling(7, min_periods=1, center=False).mean()
+
+    # График
+    fig = go.Figure()
+
+    def add_line(ycol, name, color, width=2.0):
+        fig.add_trace(go.Scatter(
+            x=df_view["День"], y=df_view[ycol], mode="lines", name=name,
+            line=dict(color=color, width=width), hovertemplate="%{x|%d.%m.%Y}<br>%{y:,}<extra></extra>", yaxis="y1"
+        ))
+
+    if show_N and "Н" in df_view: add_line("Н", "Н", "rgba(59,130,246,1)", 2.4)
+    if show_V and "В" in df_view: add_line("В", "В", "rgba(16,185,129,1)", 2.2)
+    if show_O and "О" in df_view: add_line("О", "О", "rgba(234,179,8,1)", 2.2)
+
+    if show_CTR and "CTR" in df_view:
+        fig.add_trace(go.Scatter(
+            x=df_view["День"], y=df_view["CTR"], mode="lines", name="CTR",
+            line=dict(color="rgba(239,68,68,1)", width=2.4, dash="dash"),
+            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y2"
+        ))
+
+    fig.update_layout(
+        height=560, margin=dict(l=20, r=20, t=40, b=40),
+        xaxis=dict(title="Дата", range=[pd.to_datetime(date_from), pd.to_datetime(date_to)], showgrid=False),
+        yaxis=dict(title="Трафик (Н/В/О)", showgrid=True, zeroline=False, tickformat=","),
+        yaxis2=dict(title="CTR", overlaying="y", side="right", showgrid=False, tickformat=".2%"),
+        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Таблица + экспорт
+    df_out = df_view.copy()
+    df_out["Дата"] = df_out["День"].dt.strftime("%d.%m.%Y")
+    if "CTR" in df_out:
+        df_out["CTR (в %)"] = df_out["CTR"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
+    cols = ["Дата"] + [c for c, flag in [("Н", show_N), ("В", show_V), ("О", show_O)] if flag]
+    if show_CTR: cols += ["CTR (в %)"]
+    st.dataframe(df_out[cols], use_container_width=True, hide_index=True)
+
+    csv = df_out[["День"] + [c for c in ["Н","В","О","CTR"] if c in df_out]].to_csv(index=False).encode("utf-8")
+    st.download_button("Скачать CSV (видимые ряды)", data=csv, file_name="traffic_total.csv", mime="text/csv")
 # =====================================================
 # 6) ДРУГИЕ РК — сравнение CTR
 # =====================================================
@@ -1466,95 +1555,3 @@ else:  # "Другие РК"
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     st.plotly_chart(figm, use_container_width=True)
-    # =====================================================
-# 7) ОБЩИЙ ТРАФИК — Н / В / О + CTR
-# =====================================================
-elif page == "Общий трафик":
-    st.markdown("### Общий трафик: Н / В / О + CTR")
-
-    # Собираем общую таблицу дат
-    base_dates = pd.DataFrame({"День": pd.date_range(
-        start=min(df_N["День"].min(), df_V["День"].min(), df_O["День"].min(), df_ctr["День"].min()),
-        end=max(df_N["День"].max(), df_V["День"].max(), df_O["День"].max(), df_ctr["День"].max()),
-        freq="D"
-    )})
-
-    # Объединяем ряды
-    df_total = base_dates.merge(df_N, on="День", how="left") \
-                         .merge(df_V, on="День", how="left") \
-                         .merge(df_O, on="День", how="left") \
-                         .merge(df_ctr[["День", "CTR"]], on="День", how="left")
-
-    # Фильтры диапазона
-    min_date = df_total["День"].min(); max_date = df_total["День"].max()
-    st.markdown("<div style='text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;'><b>Фильтры</b></div>", unsafe_allow_html=True)
-    col_l, col_c, col_r = st.columns([1, 2.5, 1])
-    with col_c:
-        date_from, date_to = st.slider(
-            "Диапазон дат",
-            min_value=min_date.to_pydatetime(),
-            max_value=max_date.to_pydatetime(),
-            value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
-            format="DD.MM.YYYY",
-        )
-
-    df_view = df_total[(df_total["День"] >= pd.to_datetime(date_from)) & (df_total["День"] <= pd.to_datetime(date_to))].copy()
-
-    # Переключатели линий
-    c1, c2, c3, c4, c5 = st.columns(5)
-    with c1: show_N = st.checkbox("Показать «Н»", True)
-    with c2: show_V = st.checkbox("Показать «В»", True)
-    with c3: show_O = st.checkbox("Показать «О»", True)
-    with c4: show_CTR = st.checkbox("Показать CTR", True)
-    with c5: smooth = st.checkbox("Сгладить (7 дн.)", False, help="Простое скользящее среднее")
-
-    if smooth:
-        for col in ["Н", "В", "О"]:
-            if col in df_view:
-                df_view[col] = df_view[col].rolling(7, min_periods=1, center=False).mean()
-        if "CTR" in df_view:
-            df_view["CTR"] = df_view["CTR"].rolling(7, min_periods=1, center=False).mean()
-
-    # График
-    fig = go.Figure()
-
-    def add_line(ycol, name, color, width=2.0):
-        fig.add_trace(go.Scatter(
-            x=df_view["День"], y=df_view[ycol], mode="lines", name=name,
-            line=dict(color=color, width=width), hovertemplate="%{x|%d.%m.%Y}<br>%{y:,}<extra></extra>", yaxis="y1"
-        ))
-
-    if show_N and "Н" in df_view: add_line("Н", "Н", "rgba(59,130,246,1)", 2.4)
-    if show_V and "В" in df_view: add_line("В", "В", "rgba(16,185,129,1)", 2.2)
-    if show_O and "О" in df_view: add_line("О", "О", "rgba(234,179,8,1)", 2.2)
-
-    if show_CTR and "CTR" in df_view:
-        fig.add_trace(go.Scatter(
-            x=df_view["День"], y=df_view["CTR"], mode="lines", name="CTR",
-            line=dict(color="rgba(239,68,68,1)", width=2.4, dash="dash"),
-            hovertemplate="%{x|%d.%m.%Y}<br>CTR: %{y:.2%}<extra></extra>", yaxis="y2"
-        ))
-
-    fig.update_layout(
-        height=560, margin=dict(l=20, r=20, t=40, b=40),
-        xaxis=dict(title="Дата", range=[pd.to_datetime(date_from), pd.to_datetime(date_to)], showgrid=False),
-        yaxis=dict(title="Трафик (Н/В/О)", showgrid=True, zeroline=False, tickformat=","),
-        yaxis2=dict(title="CTR", overlaying="y", side="right", showgrid=False, tickformat=".2%"),
-        hovermode="x unified", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    # Таблица + экспорт
-    df_out = df_view.copy()
-    df_out["Дата"] = df_out["День"].dt.strftime("%d.%m.%Y")
-    if "CTR" in df_out:
-        df_out["CTR (в %)"] = df_out["CTR"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
-    cols = ["Дата"] + [c for c, flag in [("Н", show_N), ("В", show_V), ("О", show_O)] if flag]
-    if show_CTR: cols += ["CTR (в %)"]
-    st.dataframe(df_out[cols], use_container_width=True, hide_index=True)
-
-    csv = df_out[["День"] + [c for c in ["Н","В","О","CTR"] if c in df_out]].to_csv(index=False).encode("utf-8")
-    st.download_button("Скачать CSV (видимые ряды)", data=csv, file_name="traffic_total.csv", mime="text/csv")
-
-
