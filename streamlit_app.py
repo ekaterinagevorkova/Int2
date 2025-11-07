@@ -750,11 +750,11 @@ with st.container():
 
 if page == "Итоги":
     # ==============================
-    # ИТОГИ: локальные пики CTR
+    # ИТОГИ: локальные пики CTR (±10 дней)
     # ==============================
     import numpy as np
 
-    st.markdown("### Итоги: локальные пики CTR и факторы")
+    st.markdown("### Итоги: локальные пики CTR и факторы (окно ±10 дней)")
 
     # --- границы флайтов (как в «Смена креативов») ---
     b1 = pd.to_datetime("2025-04-23")
@@ -772,18 +772,22 @@ if page == "Итоги":
         """Активный сезон: февраль–июнь."""
         return d.month in (2, 3, 4, 5, 6)
 
-    def local_flag(series: pd.Series, idx: int, window: int = 7) -> tuple[bool, float]:
+    def local_flag(series: pd.Series, idx: int, window: int = 10) -> tuple[bool, float]:
         """Значение дня > локального среднего в окне ±window (без самого дня)."""
         left = max(0, idx - window)
         right = min(len(series) - 1, idx + window)
         win = series.iloc[left:right+1].copy()
-        win = win.drop(series.index[idx])
+        if idx < len(series):
+            win = win.drop(series.index[idx], errors="ignore")
         loc_mean = float(win.mean()) if len(win) else np.nan
-        val = float(series.iloc[idx])
+        try:
+            val = float(series.iloc[idx])
+        except Exception:
+            val = np.nan
         flag = (not np.isnan(val) and not np.isnan(loc_mean) and val > loc_mean)
         return flag, loc_mean
 
-    def is_peak_ctr(df_ctr_sorted: pd.DataFrame, idx: int, window: int = 7) -> bool:
+    def is_peak_ctr(df_ctr_sorted: pd.DataFrame, idx: int, window: int = 10) -> bool:
         """Строгий локальный максимум CTR в окне ±window (единственный максимум)."""
         left = max(0, idx - window)
         right = min(len(df_ctr_sorted) - 1, idx + window)
@@ -814,7 +818,7 @@ if page == "Итоги":
 
     def event_exact_titles(d: pd.Timestamp) -> list[str]:
         """
-        Точные события в этот день: дата совпадает с началом ИЛИ окончанием.
+        Точные события в этот день: дата совпадает с началом ИЛИ с окончанием.
         Ожидается df_events со столбцами ['начало','окончание','название'].
         """
         if "df_events" not in globals() or df_events is None or df_events.empty:
@@ -832,21 +836,15 @@ if page == "Итоги":
     ctr = df_ctr.sort_values("День").reset_index(drop=True).copy()
 
     # Из «Общий трафик»: ожидаются df_N (Н), df_V (В), df_O (О)
-    # Сшиваем в единую шкалу дат
     base = pd.DataFrame({"День": pd.date_range(ctr["День"].min(), ctr["День"].max(), freq="D")})
     if "df_N" in globals(): base = base.merge(df_N, on="День", how="left")
     if "df_V" in globals(): base = base.merge(df_V, on="День", how="left")
     if "df_O" in globals(): base = base.merge(df_O, on="День", how="left")
     base = base.merge(ctr[["День", "CTR"]], on="День", how="left")
 
-    # Переименуем на всякий случай (если в df_N/df_V/df_O столбцы уже так названы — ничего не сломается)
-    base = base.rename(columns={
-        "Н": "Н", "В": "В", "О": "О"  # просто фиксируем, что используем эти имена
-    })
-
-    # ---------- Поиск локальных пиков CTR ----------
+    # ---------- Поиск локальных пиков CTR (±10 дней) ----------
     peaks_rows = []
-    W = 7  # окно ±7 дней
+    W = 10  # окно ±10 дней
 
     for i in range(len(base)):
         if not is_peak_ctr(base[["День", "CTR"]], i, W):
@@ -854,12 +852,12 @@ if page == "Итоги":
 
         d = base["День"].iloc[i]
 
-        # Локальные сравнения
+        # Локальные сравнения (±10 дней)
         flag_V, _ = local_flag(base["В"], i, W) if "В" in base.columns else (False, np.nan)
         flag_N, _ = local_flag(base["Н"], i, W) if "Н" in base.columns else (False, np.nan)
         flag_O, _ = local_flag(base["О"], i, W) if "О" in base.columns else (False, np.nan)
 
-        # Смена креатива в +5 дней
+        # Смена креатива в +5 дней (без изменений)
         has_creo_change = creative_change_within_plus5(d)
 
         # Точное событие (совпадение с началом/окончанием)
@@ -873,7 +871,7 @@ if page == "Итоги":
         creo_no = creative_number_for_day(d)
 
         peaks_rows.append({
-            "Локальные пики CTR (±7 дней) – дата": d,
+            "Локальные пики CTR (±10 дней) – дата": d,
             "Локальные просмотры баннеров выше – да/нет": "да" if flag_V else "нет",
             "Локально больше Н-пользователей – да/нет": "да" if flag_N else "нет",
             "Локально больше О-пользователей – да/нет": "да" if flag_O else "нет",
@@ -889,7 +887,7 @@ if page == "Итоги":
             "_О": base["О"].iloc[i] if "О" in base.columns else np.nan,
         })
 
-    df_peaks = pd.DataFrame(peaks_rows).sort_values("Локальные пики CTR (±7 дней) – дата").reset_index(drop=True)
+    df_peaks = pd.DataFrame(peaks_rows).sort_values("Локальные пики CTR (±10 дней) – дата").reset_index(drop=True)
 
     if df_peaks.empty:
         st.info("Локальные пики CTR не найдены.")
@@ -897,7 +895,7 @@ if page == "Итоги":
 
     # ---------- Таблица пиков ----------
     table_cols = [
-        "Локальные пики CTR (±7 дней) – дата",
+        "Локальные пики CTR (±10 дней) – дата",
         "Локальные просмотры баннеров выше – да/нет",
         "Локально больше Н-пользователей – да/нет",
         "Локально больше О-пользователей – да/нет",
@@ -908,9 +906,9 @@ if page == "Итоги":
         "Номер креатива",
     ]
     df_show = df_peaks[table_cols].copy()
-    df_show["Локальные пики CTR (±7 дней) – дата"] = df_show["Локальные пики CTR (±7 дней) – дата"].dt.strftime("%d.%m.%Y")
+    df_show["Локальные пики CTR (±10 дней) – дата"] = df_show["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
 
-    st.markdown("#### Локальные пики CTR (окно ±7 дней)")
+    st.markdown("#### Локальные пики CTR (окно ±10 дней)")
     st.dataframe(df_show, use_container_width=True, hide_index=True)
 
     # ---------- Карточки: доля «да» по признакам ----------
@@ -938,7 +936,7 @@ if page == "Итоги":
     st.markdown("""
         <style>
             .kpi-card {
-                background:#1f2937; /* dark gray */
+                background:#1f2937;
                 color:#ffffff;
                 padding:14px 16px;
                 border-radius:14px;
@@ -950,7 +948,7 @@ if page == "Итоги":
         </style>
     """, unsafe_allow_html=True)
 
-    st.markdown("#### Доли положительных признаков по всем пикам CTR")
+    st.markdown("#### Доли положительных признаков по всем пикам CTR (окно ±10 дней)")
     cols = st.columns(3)
     for i, row in df_stats.iterrows():
         with cols[i % 3]:
@@ -970,16 +968,17 @@ if page == "Итоги":
         st.download_button(
             "Скачать таблицу пиков (CSV)",
             data=df_show.to_csv(index=False).encode("utf-8"),
-            file_name="peaks_table.csv",
+            file_name="peaks_table_window10.csv",
             mime="text/csv",
         )
     with c2:
         st.download_button(
             "Скачать карточки (% «да») (CSV)",
             data=df_stats.to_csv(index=False).encode("utf-8"),
-            file_name="peaks_kpi.csv",
+            file_name="peaks_kpi_window10.csv",
             mime="text/csv",
         )
+
 
 
 # =====================================================
