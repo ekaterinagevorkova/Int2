@@ -748,184 +748,188 @@ with st.container():
     label_visibility="collapsed",
 )
 
-# =====================================================
-# 1) ИТОГИ
-# =====================================================
-if page == "Итоги":
-    st.markdown("### Итоги: локальные пики CTR и факторы")
-
-    # ---------- Вспомогательные функции ----------
+elif page == "Итоги":
+    # ==============================
+    # ИТОГИ: локальные пики CTR
+    # ==============================
     import numpy as np
 
+    st.markdown("### Итоги: локальные пики CTR и факторы")
+
+    # --- границы флайтов (как в «Смена креативов») ---
+    b1 = pd.to_datetime("2025-04-23")
+    b2 = pd.to_datetime("2025-07-07")
+    b3 = pd.to_datetime("2025-08-14")
+    b4 = pd.to_datetime("2025-10-22")
+    b5 = pd.to_datetime("2025-10-29")
+
+    # ---------- Вспомогательные функции ----------
     def month_index_from_anchor(d: pd.Timestamp, anchor=pd.Timestamp("2025-04-22")) -> int:
-        """Номер месяца, считая Apr-2025 (с 22 числа) как 1, затем май=2 и т.д."""
-        # считаем по календарным месяцам
-        m = (d.year - anchor.year) * 12 + (d.month - anchor.month) + 1
-        # если дата раньше 22-го числа якорного месяца — не уходим в 0, оставляем 1
-        return int(m)
+        """Номер месяца, считая апрель-2025 (с 22-го) как 1, май — 2 и т.д."""
+        return int((d.year - anchor.year) * 12 + (d.month - anchor.month) + 1)
 
     def in_active_season(d: pd.Timestamp) -> bool:
-        return d.month in (2, 3, 4, 5, 6)  # фев-июнь
+        """Активный сезон: февраль–июнь."""
+        return d.month in (2, 3, 4, 5, 6)
 
     def local_flag(series: pd.Series, idx: int, window: int = 7) -> tuple[bool, float]:
-        """day_value > среднее по локальному окну (±window), возвращает (флаг, лок.ср.)."""
+        """Значение дня > локального среднего в окне ±window (без самого дня)."""
         left = max(0, idx - window)
         right = min(len(series) - 1, idx + window)
-        window_vals = series.iloc[left:right+1].copy()
-        window_vals = window_vals.drop(series.index[idx])  # без самого дня
-        loc_mean = float(window_vals.mean()) if len(window_vals) else np.nan
+        win = series.iloc[left:right+1].copy()
+        win = win.drop(series.index[idx])
+        loc_mean = float(win.mean()) if len(win) else np.nan
         val = float(series.iloc[idx])
-        return (not np.isnan(val) and not np.isnan(loc_mean) and val > loc_mean, loc_mean)
+        flag = (not np.isnan(val) and not np.isnan(loc_mean) and val > loc_mean)
+        return flag, loc_mean
 
     def is_peak_ctr(df_ctr_sorted: pd.DataFrame, idx: int, window: int = 7) -> bool:
         """Строгий локальный максимум CTR в окне ±window (единственный максимум)."""
         left = max(0, idx - window)
         right = min(len(df_ctr_sorted) - 1, idx + window)
-        window_vals = df_ctr_sorted["CTR"].iloc[left:right+1]
-        center_val = df_ctr_sorted["CTR"].iloc[idx]
-        if pd.isna(center_val):
+        win = df_ctr_sorted["CTR"].iloc[left:right+1]
+        center = df_ctr_sorted["CTR"].iloc[idx]
+        if pd.isna(center):
             return False
-        max_val = window_vals.max()
+        max_val = win.max()
         if not np.isfinite(max_val):
             return False
-        if abs(center_val - max_val) > 0 and center_val < max_val:
+        if center < max_val:
             return False
-        # единственный максимум в окне
-        return (window_vals == max_val).sum() == 1
+        return (win == max_val).sum() == 1
 
-    # ---------- Подготовка датафреймов ----------
-    # Гарантируем единый календарь
-    # df_ctr: ["День","CTR"] уже есть в приложении
+    def creative_number_for_day(d: pd.Timestamp) -> int | None:
+        """Номер креатива (1..4) по текущему дню, как в графике «Смена креативов»."""
+        if d < b2: return 1            # 23.04–07.07
+        elif d < b3: return 2           # 07.07–14.08
+        elif d < b4: return 3           # 14.08–22.10
+        elif d <= b5: return 4          # 22.10–29.10
+        return None
+
+    def creative_change_within_plus5(d: pd.Timestamp) -> bool:
+        """Есть ли смена креатива в интервале [d; d+5 дней]."""
+        change_points = [b2, b3, b4]
+        horizon = d + pd.Timedelta(days=5)
+        return any((cp >= d) and (cp <= horizon) for cp in change_points)
+
+    def event_exact_titles(d: pd.Timestamp) -> list[str]:
+        """
+        Точные события в этот день: дата совпадает с началом ИЛИ окончанием.
+        Ожидается df_events со столбцами ['начало','окончание','название'].
+        """
+        if "df_events" not in globals() or df_events is None or df_events.empty:
+            return []
+        if not {"начало", "окончание", "название"}.issubset(df_events.columns):
+            return []
+        rows = df_events[
+            (df_events["начало"].dt.date == d.date()) |
+            (df_events["окончание"].dt.date == d.date())
+        ]
+        return [] if rows.empty else [str(x) for x in rows["название"].tolist()]
+
+    # ---------- Подготовка данных ----------
+    # Базовый CTR
     ctr = df_ctr.sort_values("День").reset_index(drop=True).copy()
 
-    # Из раздела «Общий трафик»
-    # df_N, df_V, df_O — ожидаются ранее собранными (см. «Общий трафик»)
+    # Из «Общий трафик»: ожидаются df_N (Н), df_V (В), df_O (О)
+    # Сшиваем в единую шкалу дат
     base = pd.DataFrame({"День": pd.date_range(ctr["День"].min(), ctr["День"].max(), freq="D")})
-    base = (base.merge(df_N, on="День", how="left")
-                .merge(df_V, on="День", how="left")
-                .merge(df_O, on="День", how="left")
-                .merge(ctr, on="День", how="left"))
+    if "df_N" in globals(): base = base.merge(df_N, on="День", how="left")
+    if "df_V" in globals(): base = base.merge(df_V, on="День", how="left")
+    if "df_O" in globals(): base = base.merge(df_O, on="День", how="left")
+    base = base.merge(ctr[["День", "CTR"]], on="День", how="left")
 
-    # Опциональные источники:
-    # df_creatives: столбцы ["start","end","creative_id"] или ["date","creative_id"]
-    # df_events: столбцы ["date","title"]
-    df_creatives = globals().get("df_creatives", None)
-    df_events    = globals().get("df_events", None)
+    # Переименуем на всякий случай (если в df_N/df_V/df_O столбцы уже так названы — ничего не сломается)
+    base = base.rename(columns={
+        "Н": "Н", "В": "В", "О": "О"  # просто фиксируем, что используем эти имена
+    })
 
-    # Функции маппинга креатива/событий
-    def creative_on_day(d: pd.Timestamp) -> str | None:
-        if df_creatives is None or df_creatives.empty:
-            return None
-        dc = df_creatives.copy()
-        if {"start","end","creative_id"}.issubset(dc.columns):
-            row = dc[(dc["start"] <= d) & (dc["end"] >= d)]
-        elif {"date","creative_id"}.issubset(dc.columns):
-            # считаем, что действует с этой даты до следующей смены
-            dc = dc.sort_values("date")
-            # последняя запись с date <= d
-            row = dc[dc["date"] <= d].tail(1)
-        else:
-            return None
-        return None if row.empty else str(row.iloc[0]["creative_id"])
-
-    def creative_change_within_plus3(d: pd.Timestamp) -> bool:
-        if df_creatives is None or df_creatives.empty:
-            return False
-        if "date" in df_creatives.columns:
-            # фиксированные точки смен
-            return ((df_creatives["date"] >= d) & (df_creatives["date"] <= d + pd.Timedelta(days=3))).any()
-        elif {"start","end"}.issubset(df_creatives.columns):
-            # смена — любое начало периода в +3 дня
-            return (df_creatives["start"].between(d, d + pd.Timedelta(days=3))).any()
-        return False
-
-    def event_on_day(d: pd.Timestamp) -> tuple[bool, str]:
-        if df_events is None or df_events.empty or "date" not in df_events.columns:
-            return (False, "")
-        rows = df_events[df_events["date"] == d]
-        if rows.empty:
-            return (False, "")
-        title = str(rows.iloc[0].get("title", ""))
-        return (True, title)
-
-    # ---------- Находим локальные пики CTR ----------
+    # ---------- Поиск локальных пиков CTR ----------
     peaks_rows = []
     W = 7  # окно ±7 дней
+
     for i in range(len(base)):
-        if is_peak_ctr(base[["День","CTR"]], i, W):
-            d = base["День"].iloc[i]
-            # флаги "локально больше X"
-            flag_V, mean_V = local_flag(base["В"], i, W)
-            flag_N, mean_N = local_flag(base["Н"], i, W)
-            flag_O, mean_O = local_flag(base["О"], i, W)
-            # смена креатива в +3 дня
-            has_creative_change = creative_change_within_plus3(d)
-            # событие в этот день
-            has_event, event_title = event_on_day(d)
-            # активный сезон
-            flag_season = in_active_season(d)
-            # номер месяца от 22 апреля
-            month_no = month_index_from_anchor(d, pd.Timestamp("2025-04-22"))
-            # номер (id) креатива на день
-            creative_id = creative_on_day(d)
+        if not is_peak_ctr(base[["День", "CTR"]], i, W):
+            continue
 
-            peaks_rows.append({
-                "Локальные пики CTR (±7д) – дата": d,
-                "Локальные просмотры баннеров выше – да/нет": "да" if flag_V else "нет",
-                "Локально больше Н-пользователей – да/нет": "да" if flag_N else "нет",
-                "Локально больше О-пользователей – да/нет": "да" if flag_O else "нет",
-                "Смена креатива (в +3 дня) – да/нет": "да" if has_creative_change else "нет",
-                "Точные события в этот день – да/нет + название": ("да — " + event_title) if has_event else "нет",
-                "Активный сезон (фев-июнь) – да/нет": "да" if flag_season else "нет",
-                "Номер месяца (с 22 апр)": month_no,
-                "Номер креатива": creative_id if creative_id is not None else "",
-                # доп. мета для проверки
-                "_CTR": base["CTR"].iloc[i],
-                "_Н": base["Н"].iloc[i],
-                "_В": base["В"].iloc[i],
-                "_О": base["О"].iloc[i],
-            })
+        d = base["День"].iloc[i]
 
-    df_peaks = pd.DataFrame(peaks_rows).sort_values("Локальные пики CTR (±7д) – дата").reset_index(drop=True)
+        # Локальные сравнения
+        flag_V, _ = local_flag(base["В"], i, W) if "В" in base.columns else (False, np.nan)
+        flag_N, _ = local_flag(base["Н"], i, W) if "Н" in base.columns else (False, np.nan)
+        flag_O, _ = local_flag(base["О"], i, W) if "О" in base.columns else (False, np.nan)
 
-    # ---------- Таблица пиков ----------
+        # Смена креатива в +5 дней
+        has_creo_change = creative_change_within_plus5(d)
+
+        # Точное событие (совпадение с началом/окончанием)
+        titles = event_exact_titles(d)
+        has_exact_event = len(titles) > 0
+        titles_joined = ", ".join(titles)
+
+        # Прочие признаки
+        flag_season = in_active_season(d)
+        month_no = month_index_from_anchor(d, pd.Timestamp("2025-04-22"))
+        creo_no = creative_number_for_day(d)
+
+        peaks_rows.append({
+            "Локальные пики CTR (±7 дней) – дата": d,
+            "Локальные просмотры баннеров выше – да/нет": "да" if flag_V else "нет",
+            "Локально больше Н-пользователей – да/нет": "да" if flag_N else "нет",
+            "Локально больше О-пользователей – да/нет": "да" if flag_O else "нет",
+            "Смена креатива (в диапазоне +5 дней) – да/нет": "да" if has_creo_change else "нет",
+            "Точные события в этот день – да/нет + название": ("да — " + titles_joined) if has_exact_event else "нет",
+            "Активный сезон (февраль–июнь) – да/нет": "да" if flag_season else "нет",
+            "Номер месяца (с 22 апреля)": month_no,
+            "Номер креатива": creo_no if creo_no is not None else "",
+            # мета
+            "_CTR": base["CTR"].iloc[i],
+            "_Н": base["Н"].iloc[i] if "Н" in base.columns else np.nan,
+            "_В": base["В"].iloc[i] if "В" in base.columns else np.nan,
+            "_О": base["О"].iloc[i] if "О" in base.columns else np.nan,
+        })
+
+    df_peaks = pd.DataFrame(peaks_rows).sort_values("Локальные пики CTR (±7 дней) – дата").reset_index(drop=True)
+
     if df_peaks.empty:
-        st.info("Локальные пики CTR не найдены по выбранному периоду.")
+        st.info("Локальные пики CTR не найдены.")
         st.stop()
 
-    # Чистая витрина без служебных колонок
-    view_cols = [
-        "Локальные пики CTR (±7д) – дата",
+    # ---------- Таблица пиков ----------
+    table_cols = [
+        "Локальные пики CTR (±7 дней) – дата",
         "Локальные просмотры баннеров выше – да/нет",
         "Локально больше Н-пользователей – да/нет",
         "Локально больше О-пользователей – да/нет",
-        "Смена креатива (в +3 дня) – да/нет",
+        "Смена креатива (в диапазоне +5 дней) – да/нет",
         "Точные события в этот день – да/нет + название",
-        "Активный сезон (фев-июнь) – да/нет",
-        "Номер месяца (с 22 апр)",
+        "Активный сезон (февраль–июнь) – да/нет",
+        "Номер месяца (с 22 апреля)",
         "Номер креатива",
     ]
-    df_show = df_peaks[view_cols].copy()
-    df_show["Локальные пики CTR (±7д) – дата"] = df_show["Локальные пики CTR (±7д) – дата"].dt.strftime("%d.%m.%Y")
+    df_show = df_peaks[table_cols].copy()
+    df_show["Локальные пики CTR (±7 дней) – дата"] = df_show["Локальные пики CTR (±7 дней) – дата"].dt.strftime("%d.%m.%Y")
+
+    st.markdown("#### Локальные пики CTR (окно ±7 дней)")
     st.dataframe(df_show, use_container_width=True, hide_index=True)
 
-    # ---------- Карточки с % «да» по признакам ----------
+    # ---------- Карточки: доля «да» по признакам ----------
     bool_cols = [
         "Локальные просмотры баннеров выше – да/нет",
         "Локально больше Н-пользователей – да/нет",
         "Локально больше О-пользователей – да/нет",
-        "Смена креатива (в +3 дня) – да/нет",
-        "Точные события в этот день – да/нет + название",  # считаем «да», если начинается с «да»
-        "Активный сезон (фев-июнь) – да/нет",
+        "Смена креатива (в диапазоне +5 дней) – да/нет",
+        "Точные события в этот день – да/нет + название",  # считаем «да», если строка начинается с «да»
+        "Активный сезон (февраль–июнь) – да/нет",
     ]
-
     stats = []
+    total = len(df_peaks)
     for col in bool_cols:
         if col == "Точные события в этот день – да/нет + название":
             pos = df_peaks[col].fillna("").str.startswith("да").sum()
         else:
             pos = (df_peaks[col] == "да").sum()
-        pct = 0.0 if len(df_peaks) == 0 else 100.0 * pos / len(df_peaks)
+        pct = 0.0 if total == 0 else 100.0 * pos / total
         stats.append({"Признак": col, "Доля «да», %": pct})
 
     df_stats = pd.DataFrame(stats).sort_values("Доля «да», %", ascending=False).reset_index(drop=True)
@@ -935,23 +939,21 @@ if page == "Итоги":
         <style>
             .kpi-card {
                 background:#1f2937; /* dark gray */
-                color:#fff;
+                color:#ffffff;
                 padding:14px 16px;
                 border-radius:14px;
                 border:1px solid rgba(255,255,255,0.08);
-                box-shadow: 0 4px 20px rgba(0,0,0,0.20);
+                box-shadow:0 4px 20px rgba(0,0,0,0.20);
             }
-            .kpi-label { font-size: 12px; opacity: 0.9; line-height: 1.2; }
-            .kpi-value { font-size: 24px; font-weight: 700; margin-top: 6px; }
+            .kpi-label { font-size:12px; line-height:1.2; opacity:0.95; }
+            .kpi-value { font-size:24px; font-weight:700; margin-top:6px; }
         </style>
     """, unsafe_allow_html=True)
 
     st.markdown("#### Доли положительных признаков по всем пикам CTR")
-    # выводим аранжировано от большего к меньшему
     cols = st.columns(3)
     for i, row in df_stats.iterrows():
-        col = cols[i % 3]
-        with col:
+        with cols[i % 3]:
             st.markdown(
                 f"""
                 <div class="kpi-card">
@@ -962,14 +964,22 @@ if page == "Итоги":
                 unsafe_allow_html=True,
             )
 
-    # Экспорт
-    col_dl1, col_dl2 = st.columns([1,1])
-    with col_dl1:
-        csv1 = df_show.to_csv(index=False).encode("utf-8")
-        st.download_button("Скачать пиковую таблицу (CSV)", data=csv1, file_name="peaks_table.csv", mime="text/csv")
-    with col_dl2:
-        csv2 = df_stats.to_csv(index=False).encode("utf-8")
-        st.download_button("Скачать карточки (% «да») (CSV)", data=csv2, file_name="peaks_kpi.csv", mime="text/csv")
+    # ---------- Экспорт ----------
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button(
+            "Скачать таблицу пиков (CSV)",
+            data=df_show.to_csv(index=False).encode("utf-8"),
+            file_name="peaks_table.csv",
+            mime="text/csv",
+        )
+    with c2:
+        st.download_button(
+            "Скачать карточки (% «да») (CSV)",
+            data=df_stats.to_csv(index=False).encode("utf-8"),
+            file_name="peaks_kpi.csv",
+            mime="text/csv",
+        )
 
 
 # =====================================================
