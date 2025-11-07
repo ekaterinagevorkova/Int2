@@ -748,218 +748,146 @@ with st.container():
     label_visibility="collapsed",
 )
 
-if page == "Итоги":
-    # ==============================
-    # ИТОГИ: робастные локальные пики CTR (окно ±10 дней)
-    # ==============================
+elif page == "Итоги":
     import numpy as np
-
     st.markdown("### Итоги: локальные пики CTR и факторы (робастный критерий, окно ±10 дней)")
 
-    # --- границы флайтов (как в «Смена креативов») ---
-    b1 = pd.to_datetime("2025-04-23")
-    b2 = pd.to_datetime("2025-07-07")
-    b3 = pd.to_datetime("2025-08-14")
-    b4 = pd.to_datetime("2025-10-22")
-    b5 = pd.to_datetime("2025-10-29")
+    # --- границы флайтов ---
+    b1, b2, b3, b4, b5 = map(pd.to_datetime,
+        ["2025-04-23","2025-07-07","2025-08-14","2025-10-22","2025-10-29"])
 
-    # ---------- Вспомогательные функции ----------
-    def month_index_from_anchor(d: pd.Timestamp, anchor=pd.Timestamp("2025-04-22")) -> int:
-        shifted = d - pd.Timedelta(days=21)
-        anchor_shifted = anchor - pd.Timedelta(days=21)
-        return (shifted.year - anchor_shifted.year) * 12 + (shifted.month - anchor_shifted.month) + 1
-
-    def in_active_season(d: pd.Timestamp) -> bool:
-        return d.month in (2, 3, 4, 5, 6)
-
-    def creative_number_for_day(d: pd.Timestamp) -> int | None:
-        if d < b2: return 1
-        elif d < b3: return 2
-        elif d < b4: return 3
-        elif d <= b5: return 4
+    # --- утилиты ---
+    def month_index_from_anchor(d, anchor=pd.Timestamp("2025-04-22")):
+        s, a = d - pd.Timedelta(days=21), anchor - pd.Timedelta(days=21)
+        return (s.year - a.year) * 12 + (s.month - a.month) + 1
+    def in_active_season(d): return d.month in (2,3,4,5,6)
+    def creative_number_for_day(d):
+        if d<b2:return 1
+        elif d<b3:return 2
+        elif d<b4:return 3
+        elif d<=b5:return 4
         return None
+    def creative_change_within_plus5(d):
+        return any(d<=cp<=d+pd.Timedelta(days=5) for cp in (b2,b3,b4))
+    def mad(x): 
+        x=np.asarray(x,float);x=x[~np.isnan(x)]
+        return np.median(np.abs(x-np.median(x))) if x.size else np.nan
 
-    def creative_change_within_plus5(d: pd.Timestamp) -> bool:
-        for cp in (b2, b3, b4):
-            if d <= cp <= d + pd.Timedelta(days=5):
-                return True
-        return False
+    # --- данные ---
+    ctr=df_ctr.sort_values("День").reset_index(drop=True)
+    base=pd.DataFrame({"День":pd.date_range(ctr["День"].min(),ctr["День"].max(),freq="D")})
+    base=base.merge(ctr[["День","CTR"]],on="День",how="left")
+    for nm in ("N","V","O"):
+        key=f"df_{nm}"
+        if key in globals():
+            base=base.merge(globals()[key],on="День",how="left")
+    base=base.sort_values("День").reset_index(drop=True)
 
-    def event_exact_titles(d: pd.Timestamp) -> list[str]:
-        if df_events is None or df_events.empty:
-            return []
-        rows = df_events[
-            (df_events["начало"].dt.date == d.date()) |
-            (df_events["окончание"].dt.date == d.date())
-        ]
-        return [] if rows.empty else [str(x) for x in rows["название"].tolist()]
+    # --- предрасчёт по флайтам ---
+    def flight_slice(d1,d2):return base.loc[(base["День"]>=d1)&(base["День"]<d2),"CTR"]
+    stats={1:flight_slice(b1,b2),2:flight_slice(b2,b3),3:flight_slice(b3,b4),4:flight_slice(b4,b5)}
+    meds={k:np.nanmedian(v) for k,v in stats.items()}
+    sigs={k:1.4826*mad(v) for k,v in stats.items()}
 
-    def mad(x: np.ndarray) -> float:
-        x = np.asarray(x, dtype=float)
-        x = x[~np.isnan(x)]
-        if x.size == 0:
-            return np.nan
-        med = np.median(x)
-        return np.median(np.abs(x - med))
-
-    # ---------- Подготовка базовой таблицы дней ----------
-    ctr = df_ctr.sort_values("День").reset_index(drop=True).copy()
-    base = pd.DataFrame({"День": pd.date_range(ctr["День"].min(), ctr["День"].max(), freq="D")})
-    base = base.merge(ctr[["День", "CTR"]], on="День", how="left")
-
-    if "df_N" in globals(): base = base.merge(df_N, on="День", how="left")        # "Н"
-    if "df_V" in globals(): base = base.merge(df_V, on="День", how="left")        # "В"
-    if "df_O" in globals(): base = base.merge(df_O, on="День", how="left")        # "О"
-    base = base.sort_values("День").reset_index(drop=True)
-
-    # --- предрасчёт по флайтам
-    def flight_slice(dfrom, dto): return base.loc[(base["День"] >= dfrom) & (base["День"] < dto), "CTR"]
-    flight_stats = {
-        1: flight_slice(b1, b2),
-        2: flight_slice(b2, b3),
-        3: flight_slice(b3, b4),
-        4: flight_slice(b4, b5 + pd.Timedelta(days=0)),
-    }
-    flight_meds = {k: np.nanmedian(v.values) if v.size else np.nan for k, v in flight_stats.items()}
-    flight_sigmas = {k: 1.4826 * mad(v.values) for k, v in flight_stats.items()}
-
-    # ---------- Робастный детектор пиков ----------
-    W = 10
-    z_min = 1.0
-    relA0, relB0 = 0.04, 0.03
-    target_low, target_high = 20, 25
-    step, max_iters = 0.005, 30
-
-    def make_candidates(relA, relB):
-        cand = []
-        vals = base["CTR"].values
+    # --- детектор пиков ---
+    W,z_min,relA0,relB0=10,1.0,0.04,0.03
+    def make_candidates(relA,relB):
+        cnd=[]
         for i in range(len(base)):
-            c = vals[i]
-            if np.isnan(c): continue
-            left, right = max(0, i - W), min(len(base) - 1, i + W)
-            win = base["CTR"].iloc[left:right+1].copy()
-            win_wo = win.drop(base.index[i], errors="ignore")
-            wvals, wovals = win.values.astype(float), win_wo.values.astype(float)
-            med, sigma = np.nanmedian(wvals), 1.4826 * mad(wvals)
-            mean_wo = np.nanmean(wovals)
-            rel = (c - mean_wo) / mean_wo if mean_wo > 0 else np.nan
-            q85 = np.nanquantile(wvals, 0.85)
-            z = (c - med) / sigma if sigma > 0 else 0
-            condA = (z >= z_min) and (rel >= relA)
-            condB = (c >= q85) and (rel >= relB)
-            if not (condA or condB): continue
-            d = base["День"].iloc[i]
-            creo = creative_number_for_day(d)
-            if creo and not np.isnan(flight_meds[creo]) and not np.isnan(flight_sigmas[creo]):
-                if c < flight_meds[creo] + 0.5 * flight_sigmas[creo]: continue
-            cand.append(i)
-        return cand
+            c=base["CTR"].iloc[i]
+            if np.isnan(c):continue
+            l,r=max(0,i-W),min(len(base)-1,i+W)
+            win=base["CTR"].iloc[l:r+1]
+            med,sigma=np.nanmedian(win),1.4826*mad(win)
+            mean_wo=np.nanmean(win.drop(base.index[i],errors="ignore"))
+            rel=(c-mean_wo)/mean_wo if mean_wo>0 else np.nan
+            q85=np.nanquantile(win,0.85)
+            z=(c-med)/sigma if sigma>0 else 0
+            if not(((z>=z_min)and(rel>=relA))or((c>=q85)and(rel>=relB))):continue
+            d=base["День"].iloc[i];cr=creative_number_for_day(d)
+            if cr and not(np.isnan(meds[cr])or np.isnan(sigs[cr])):
+                if c<meds[cr]+0.5*sigs[cr]:continue
+            cnd.append(i)
+        return cnd
+    def nms_keep_max(idx,gap=2):
+        if not idx:return []
+        idx=sorted(set(idx));out=[];cl=[idx[0]]
+        for a,b in zip(idx,idx[1:]):
+            if b-a<=gap:cl.append(b)
+            else:out.append(max(cl,key=lambda j:base["CTR"].iloc[j]));cl=[b]
+        out.append(max(cl,key=lambda j:base["CTR"].iloc[j]));return out
+    relA,relB,best=(relA0,relB0,([],1e9))
+    for _ in range(30):
+        cand=nms_keep_max(make_candidates(relA,relB))
+        sc=abs(len(cand)-22.5)
+        if sc<best[1]:best=(cand,sc)
+        if 20<=len(cand)<=25:break
+        relA+=0.005*(1 if len(cand)>25 else -1)
+        relB+=0.005*(1 if len(cand)>25 else -1)
+    final_idx=best[0]
 
-    def nms_keep_max(cand_idx, gap=2):
-        if not cand_idx: return []
-        cand_idx = sorted(set(cand_idx))
-        kept, cluster = [], [cand_idx[0]]
-        for a, b in zip(cand_idx, cand_idx[1:]):
-            if (b - a) <= gap: cluster.append(b)
-            else:
-                best = max(cluster, key=lambda x: base["CTR"].iloc[x]); kept.append(best); cluster = [b]
-        best = max(cluster, key=lambda x: base["CTR"].iloc[x]); kept.append(best)
-        return kept
-
-    relA, relB, best_pack, mid_target = relA0, relB0, ([], relA0, relB0, 1e9), (target_low + target_high) / 2
-    for _ in range(max_iters):
-        cand = make_candidates(relA, relB)
-        picked = nms_keep_max(cand)
-        cnt = len(picked)
-        score = abs(cnt - mid_target)
-        if score < best_pack[3]: best_pack = (picked, relA, relB, score)
-        if target_low <= cnt <= target_high:
-            final_indices, tuned_relA, tuned_relB = picked, relA, relB; break
-        if cnt < target_low: relA, relB = relA - step, relB - step
-        else: relA, relB = relA + step, relB + step
-    else:
-        final_indices, tuned_relA, tuned_relB, _ = best_pack
-
-    # ---------- Сбор таблицы пиков ----------
-    peaks_rows = []
-    for i in final_indices:
-        d = base["День"].iloc[i]
-        def local_above(col):
-            if col not in base.columns: return False
-            s = base[col]; left, right = max(0, i - W), min(len(s) - 1, i + W)
-            win = s.iloc[left:right+1].copy().drop(s.index[i], errors="ignore")
-            return s.iloc[i] > win.mean() if len(win) else False
-        flagV, flagN, flagO = local_above("В"), local_above("Н"), local_above("О")
-        has_creo = creative_change_within_plus5(d)
-        events = event_exact_titles(d)
-        peaks_rows.append({
-            "Локальные пики CTR (±10 дней) – дата": d,
-            "Локальные просмотры баннеров выше – да/нет": "да" if flagV else "нет",
-            "Локально больше Н-пользователей – да/нет": "да" if flagN else "нет",
-            "Локально больше О-пользователей – да/нет": "да" if flagO else "нет",
-            "Смена креатива (в диапазоне +5 дней) – да/нет": "да" if has_creo else "нет",
-            "Точные события в этот день – да/нет + название": "да — " + ", ".join(events) if events else "нет",
-            "Активный сезон (февраль–июнь) – да/нет": "да" if in_active_season(d) else "нет",
-            "Номер месяца (с 22 апреля)": month_index_from_anchor(d),
-            "Номер креатива": creative_number_for_day(d) or "",
-            "_CTR": base["CTR"].iloc[i],
+    # --- таблица пиков ---
+    rows=[]
+    for i in final_idx:
+        d=base["День"].iloc[i]
+        def loc_gt(col):
+            if col not in base:return False
+            s=base[col];l,r=max(0,i-W),min(len(s)-1,i+W)
+            w=s.iloc[l:r+1].drop(s.index[i],errors="ignore")
+            return s.iloc[i]>w.mean() if len(w) else False
+        V,N,O=loc_gt("V"),loc_gt("N"),loc_gt("O")
+        rows.append({
+            "Локальные пики CTR (±10 дней) – дата":d,
+            "Локальные просмотры баннеров выше – да/нет":"да" if V else "нет",
+            "Локально больше Н-пользователей – да/нет":"да" if N else "нет",
+            "Локально больше О-пользователей – да/нет":"да" if O else "нет",
+            "Смена креатива (в диапазоне +5 дней) – да/нет":"да" if creative_change_within_plus5(d) else "нет",
+            "Точные события в этот день – да/нет + название":
+                "да — "+", ".join(event_exact_titles(d)) if event_exact_titles(d) else "нет",
+            "Активный сезон (февраль–июнь) – да/нет":"да" if in_active_season(d) else "нет",
+            "Номер месяца (с 22 апреля)":month_index_from_anchor(d),
+            "Номер креатива":creative_number_for_day(d) or "",
+            "_CTR":base["CTR"].iloc[i]
         })
-    df_peaks = pd.DataFrame(peaks_rows).sort_values("Локальные пики CTR (±10 дней) – дата")
+    df_peaks=pd.DataFrame(rows).sort_values("Локальные пики CTR (±10 дней) – дата")
 
-    # ---------- Карточки факторов ----------
-    factor_cols = [
+    # --- карточки по числу факторов ---
+    fact_cols=[
         "Локальные просмотры баннеров выше – да/нет",
         "Локально больше Н-пользователей – да/нет",
         "Локально больше О-пользователей – да/нет",
         "Смена креатива (в диапазоне +5 дней) – да/нет",
-        "Точные события в этот день – да/нет + название",
-    ]
-    df_peaks["_factors_yes"] = df_peaks.apply(
-        lambda r: sum([
-            r[c] == "да" if "Точные" not in c else isinstance(r[c], str) and r[c].startswith("да")
-            for c in factor_cols
-        ]), axis=1)
-
-    total = len(df_peaks)
-    buckets = [(k, (df_peaks["_factors_yes"] == k).sum(),
-                100*(df_peaks["_factors_yes"] == k).sum()/total if total else 0)
-               for k in range(1, 6)]
-
+        "Точные события в этот день – да/нет + название"]
+    df_peaks["_factors_yes"]=df_peaks.apply(
+        lambda r:sum((r[c]=="да") if "Точные" not in c else isinstance(r[c],str)and r[c].startswith("да") for c in fact_cols),axis=1)
+    tot=len(df_peaks)
+    buckets=[(k,(df_peaks["_factors_yes"]==k).sum(),
+              100*(df_peaks["_factors_yes"]==k).sum()/tot if tot else 0) for k in range(1,6)]
     st.markdown("#### Совпадения факторов у пиков (1–5)")
-    st.markdown("""
-        <style>
-            .kpi-card{background:#1f2937;color:#fff;padding:14px 16px;border-radius:14px;
-            border:1px solid rgba(255,255,255,0.08);box-shadow:0 4px 20px rgba(0,0,0,0.20);}
-            .kpi-label{font-size:12px;opacity:0.9;}
-            .kpi-value{font-size:22px;font-weight:700;margin-top:4px;}
-        </style>
-    """, unsafe_allow_html=True)
+    st.markdown("""<style>.kpi-card{background:#1f2937;color:#fff;padding:14px 16px;border-radius:14px;
+    border:1px solid rgba(255,255,255,.08);box-shadow:0 4px 20px rgba(0,0,0,.2);}
+    .kpi-label{font-size:12px;opacity:.9}.kpi-value{font-size:22px;font-weight:700;margin-top:4px}</style>""",
+                unsafe_allow_html=True)
+    cols=st.columns(5)
+    for i,(k,n,p) in enumerate(buckets):
+        with cols[i%5]:
+            st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Совпало {k} факторов</div>"
+                        f"<div class='kpi-value'>{n} из {tot} ({p:.0f}%)</div></div>",unsafe_allow_html=True)
 
-    cols_cards = st.columns(5)
-    for i, (k, n, pct) in enumerate(buckets):
-        with cols_cards[i % 5]:
-            st.markdown(
-                f"""
-                <div class="kpi-card">
-                    <div class="kpi-label">Совпало {k} факторов</div>
-                    <div class="kpi-value">{n} из {total} ({pct:.0f}%)</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-    # ---------- Таблица: только 1 фактор ----------
+    # --- таблица: один фактор ---
     st.markdown("#### Пики, где совпал только 1 фактор")
-    mask_one = df_peaks["_factors_yes"] == 1
-    def _only_factor(row):
-        for c in factor_cols:
-            if "Точные" in c:
-                if isinstance(row[c], str) and row[c].startswith("да"): return "Точные события в этот день"
-            elif row[c] == "да": return c.replace(" – да/нет", "")
+    one=df_peaks[df_peaks["_factors_yes"]==1].copy()
+    def only_factor(row):
+        for c in fact_cols:
+            if "Точные" in c and isinstance(row[c],str)and row[c].startswith("да"):return "Точные события в этот день"
+            elif row[c]=="да":return c.replace(" – да/нет","")
         return ""
-    df_one = df_peaks.loc[mask_one, ["Локальные пики CTR (±10 дней) – дата", "_CTR"] + factor_cols]
-    df_one["Единственный фактор"] = df_one.apply(_only_factor, axis=1)
-    df_one["Дата"] = df_one["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
-    df_one["CTR (%)"] = df_one["_CTR"].map(lambda x: f"{x:.2%}" if pd.notna(x) else "")
-    st.dataframe(df_one[["Дата", "Единственный фактор", "CTR (%)"]], hide_index=True, use_container_width=True)
+    one["Единственный фактор"]=one.apply(only_factor,axis=1)
+    one["Дата"]=one["Локальные пики CTR (±10 дней) – дата"].dt.strftime("%d.%m.%Y")
+    one["CTR (%)"]=one["_CTR"].map(lambda x:f"{x:.2%}" if pd.notna(x) else "")
+    st.dataframe(one[["Дата","Единственный фактор","CTR (%)"]],
+                 use_container_width=True,hide_index=True)
+
 
 
 
