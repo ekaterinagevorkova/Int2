@@ -941,48 +941,7 @@ if page == "Итоги":
     st.dataframe(df_peaks[cols_order], use_container_width=True, hide_index=True)
     st.markdown(f"**Количество пиков:** {len(df_peaks)}")
 
-    # ---------- Карточки: % пиков с положительным признаком ----------
-    # (не считаем для «Номер месяца» и «Номер креатива»)
-    kpi_cols = [
-        "Локальные просмотры баннеров выше – да/нет",
-        "Локально больше Н-пользователей – да/нет",
-        "Локально больше О-пользователей – да/нет",
-        "Смена креатива (в диапазоне +5 дней) – да/нет",
-        "Точные события в этот день – да/нет + название",
-        "Активный сезон (февраль–июнь) – да/нет",
-    ]
-    total_peaks = max(1, len(df_peaks))
-    def _is_yes(col, v):
-        if col == "Точные события в этот день – да/нет + название":
-            return isinstance(v, str) and v.startswith("да")
-        return v == "да"
-    metrics = []
-    for col in kpi_cols:
-        yes_cnt = int(df_peaks[col].apply(lambda v: _is_yes(col, v)).sum())
-        metrics.append({"title": col.replace(" – да/нет", ""), "value": 100.0 * yes_cnt / total_peaks})
-    metrics = sorted(metrics, key=lambda x: x["value"], reverse=True)
-
-    # Стили карточек
-    st.markdown("""
-        <style>
-          .kpi-wrap{display:flex;gap:12px;flex-wrap:wrap;margin:6px 0 8px 0}
-          .kpi-card{background:#1f2937;color:#ffffff;padding:12px 14px;border-radius:12px;
-                    border:1px solid rgba(255,255,255,0.08)}
-          .kpi-title{font-size:12px;color:#e5e7eb;opacity:.95}
-          .kpi-value{font-size:22px;font-weight:800;margin-top:4px}
-        </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown('<div class="kpi-wrap">', unsafe_allow_html=True)
-    for m in metrics:
-        st.markdown(
-            f"""<div class="kpi-card">
-                    <div class="kpi-title">{m['title']}</div>
-                    <div class="kpi-value">{m['value']:.0f}%</div>
-                 </div>""",
-            unsafe_allow_html=True
-        )
-    st.markdown('</div>', unsafe_allow_html=True)
+    
 
     # ---------- Совпадения факторов 1–5 (без месяца/креатива/сезона) ----------
     factor_cols = [
