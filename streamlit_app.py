@@ -9,28 +9,6 @@ import io
 st.set_page_config(page_title="CTR // Данные", layout="wide")
 
 # -----------------------------------------------------
-# ЭКРАН АВТОРИЗАЦИИ
-# -----------------------------------------------------
-if "auth_ok" not in st.session_state:
-    st.session_state.auth_ok = False
-
-if not st.session_state.auth_ok:
-    st.markdown(
-        """
-        <div style="text-align:center;margin-top:4rem;">
-            <h2>Доступ</h2>
-            <p style="color:#9ca3af;">Введите пароль, чтобы продолжить</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    pwd = st.text_input("Пароль", type="password", label_visibility="collapsed")
-    if pwd == "SportsTeam":
-        st.session_state.auth_ok = True
-        st.rerun()
-    st.stop()
-
-# -----------------------------------------------------
 # ДАННЫЕ (из «Новая таблица 10»)
 # -----------------------------------------------------
 CTR_DATA = [
