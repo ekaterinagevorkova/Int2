@@ -915,7 +915,7 @@ EXTRA_SERIES = [
         "name": "Б",
         "df": df_B,
         # жёлтый
-        "style": {"dash": "solid", "width": 2.4, "color": "rgba(241,196,15,1)", "marker_size": 5},
+        "style": {"dash": "solid", "width": 2.4, "color": "rgba(100,187,42,0.89)", "marker_size": 5},
     },
 ]
 
